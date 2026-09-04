@@ -9,6 +9,7 @@ import { readTextFile, repoTree, ensureAiBridge } from "./fsOps.js";
 import { gitDiff, gitLog, gitStatus } from "./gitOps.js";
 import { discoverSkillInventory } from "./capabilitiesOps.js";
 import type { SkillInventoryItem } from "./capabilitiesOps.js";
+import { instructionResolver } from "./instructionContext.js";
 
 export interface WorkspaceSummary {
   text: string;
@@ -16,6 +17,8 @@ export interface WorkspaceSummary {
   root: string;
   agentsLoaded: boolean;
   agentsPath?: string;
+  agentsFiles: string[];
+  instructionFingerprint: string;
   skills: string[];
   skillInventory: SkillInventoryItem[];
   skillCounts: Record<string, number>;
@@ -29,6 +32,8 @@ export interface CodexContext {
   root: string;
   targetPath: string;
   agentsFiles: string[];
+  instructionFingerprint: string;
+  instructionsChanged: boolean;
   aiContextFiles: string[];
   gitStatus?: string;
   gitDiff?: string;
@@ -159,11 +164,11 @@ export async function workspaceSummary(
     : [];
   const skills = skillInventory.map((skill) => skill.name);
   const counts = skillCounts(skillInventory);
-  const agentsPath = await findAgentsFile(workspace);
-  let agentsText = "AGENTS.md: none loaded";
-  if (agentsPath) {
-    agentsText = `AGENTS.md: ${agentsPath} (read this file before editing or making project decisions).`;
-  }
+  const instructions = await instructionResolver.resolve(config, guard, workspace, ".", { maxBytes: 20_000 });
+  const agentsPath = instructions.files[0];
+  const agentsText = instructions.files.length
+    ? `AGENTS instructions (${instructions.files.join(", ")}; fingerprint ${instructions.fingerprint.slice(0, 12)}):\n\n${instructions.combinedText}`
+    : "AGENTS.md: none loaded";
 
   let treeText: string | undefined;
   if (options.includeTree !== false) {
@@ -189,6 +194,8 @@ export async function workspaceSummary(
     root: workspace.root,
     agentsLoaded: Boolean(agentsPath),
     agentsPath,
+    agentsFiles: instructions.files,
+    instructionFingerprint: instructions.fingerprint,
     skills,
     skillInventory,
     skillCounts: counts,
@@ -247,11 +254,15 @@ export async function readCodexContext(
     includeGit?: boolean;
     includeDiff?: boolean;
     maxAgentBytes?: number;
+    instructionFingerprint?: string;
   } = {}
 ): Promise<CodexContext> {
   const targetPath = options.targetPath ?? ".";
   guard.resolve(workspace, targetPath);
-  const agents = await readAgentsChain(config, guard, workspace, targetPath, Math.min(options.maxAgentBytes ?? 60_000, config.maxReadBytes));
+  const agents = await instructionResolver.resolve(config, guard, workspace, targetPath, {
+    maxBytes: Math.min(options.maxAgentBytes ?? 60_000, config.maxReadBytes),
+    previousFingerprint: options.instructionFingerprint
+  });
   const ai = options.includeAiBridge === false
     ? { text: "Skipped by request.", files: [] }
     : await readAiBridgeContext(config, guard, workspace);
@@ -264,13 +275,15 @@ export async function readCodexContext(
     `Workspace: ${workspace.id}`,
     `Root: ${workspace.root}`,
     `Target path: ${targetPath}`,
+    `Instruction fingerprint: ${agents.fingerprint}`,
+    `Instructions changed: ${agents.changed}`,
     `Bash mode: ${config.bashMode}`,
     `Write mode: ${config.writeMode}`,
     `Tool mode: ${config.toolMode}`,
     "",
     "## AGENTS Instructions",
     "",
-    agents.text,
+    agents.combinedText,
     "",
     "## AI Bridge Context",
     "",
@@ -285,6 +298,8 @@ export async function readCodexContext(
     root: workspace.root,
     targetPath,
     agentsFiles: agents.files,
+    instructionFingerprint: agents.fingerprint,
+    instructionsChanged: agents.changed,
     aiContextFiles: ai.files,
     gitStatus: status,
     gitDiff: diff

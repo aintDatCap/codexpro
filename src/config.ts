@@ -41,6 +41,13 @@ export interface CodexProConfig {
   connectionTest: boolean;
   analysisEnabled: boolean;
   analysisLimits: AnalysisLimits;
+  browserEnabled: boolean;
+  deepseekApiKey?: string;
+  deepseekModel: string;
+  subagentsEnabled: boolean;
+  maxSubagents: number;
+  maxAgentDepth: number;
+  worktreeRoot?: string;
 }
 
 const DEFAULT_BLOCKED_GLOBS = [
@@ -336,6 +343,13 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     toolCards: boolFrom(toolCardsArg ?? process.env.CODEXPRO_TOOL_CARDS, false),
     connectionTest: boolFrom(process.env.CODEXPRO_CONNECTION_TEST, false),
     analysisEnabled: boolFrom(process.env.CODEXPRO_ANALYSIS, true),
+    browserEnabled: boolFrom(process.env.CODEXPRO_BROWSER_ENABLED, false),
+    deepseekApiKey: process.env.DEEPSEEK_API_KEY?.trim() || undefined,
+    deepseekModel: process.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat",
+    subagentsEnabled: boolFrom(process.env.CODEXPRO_SUBAGENTS_ENABLED, true) && Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+    maxSubagents: numberFrom(process.env.CODEXPRO_MAX_SUBAGENTS, 3, 1, 16),
+    maxAgentDepth: numberFrom(process.env.CODEXPRO_MAX_AGENT_DEPTH, 1, 1, 4),
+    worktreeRoot: process.env.CODEXPRO_WORKTREE_ROOT?.trim() ? path.resolve(expandHome(process.env.CODEXPRO_WORKTREE_ROOT.trim())) : undefined,
     analysisLimits: {
       maxInventoryFiles: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_INVENTORY_FILES, DEFAULT_ANALYSIS_LIMITS.maxInventoryFiles, 100, 100_000),
       maxAnalyzedFiles: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_ANALYZED_FILES, DEFAULT_ANALYSIS_LIMITS.maxAnalyzedFiles, 10, 50_000),

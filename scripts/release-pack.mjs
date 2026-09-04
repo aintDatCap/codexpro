@@ -26,9 +26,14 @@ try {
   } catch {
     fail("npm pack did not return a JSON package manifest.");
   }
-  const tarball = Array.isArray(packages) ? packages[0] : null;
-  if (!tarball || tarball.name !== CODEXPRO_PACKAGE || tarball.version !== release.version) {
-    fail(`Expected ${CODEXPRO_PACKAGE}@${release.version}; npm pack selected ${tarball?.name ?? "(missing)"}@${tarball?.version ?? "(missing)"}.`);
+  const candidates = Array.isArray(packages)
+    ? packages
+    : packages && typeof packages === "object"
+      ? [packages, ...Object.values(packages).filter((value) => value && typeof value === "object")]
+      : [];
+  const tarball = candidates.find((candidate) => candidate?.name === CODEXPRO_PACKAGE && candidate?.version === release.version) ?? null;
+  if (!tarball) {
+    fail(`Expected ${CODEXPRO_PACKAGE}@${release.version}; npm pack did not return that package manifest.`);
   }
   if (tarball.filename !== `${CODEXPRO_PACKAGE}-${release.version}.tgz`) {
     fail(`Unexpected tarball filename: ${tarball.filename ?? "(missing)"}.`);

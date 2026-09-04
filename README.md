@@ -156,10 +156,48 @@ codexpro --version
 
 Restart `codexpro start` after updating. Saved profiles under `~/.codexpro` stay in place.
 
+## Agent harness features
+
+CodexPro now resolves Codex-style repository instructions hierarchically from the repository root toward the target path. In each directory, `AGENTS.override.md` takes precedence over `AGENTS.md`, `agents.md`, and `.agents.md`. Context responses include an instruction fingerprint; send the previous fingerprint back to `codex_context` to avoid re-sending unchanged instruction bodies.
+
+The `git` tool provides structured status, branch, log, show, blame, staging, commit, restore, branch switching, and CodexPro-owned worktree operations. It deliberately does not expose arbitrary Git arguments, force pushes, hard resets, force-cleaning, or forced branch deletion.
+
+`CODEXPRO_BASH_MODE=safe` is a productive local command mode rather than a small command allowlist. Normal package managers, compilers, test runners, scripts, and command chains can run, while obviously catastrophic filesystem, disk, system, and destructive Git operations are rejected. `full` remains an explicit trusted-repository override. Commands run with bounded output, timeout handling, a controlled environment by default, and separate stdout/stderr results.
+
+Browser automation is opt-in with `CODEXPRO_BROWSER_ENABLED=1`. It uses Playwright Chromium with one isolated browser context per CodexPro browser session, supports navigation, semantic snapshots, interaction, tabs, waits, and screenshots, and does not inherit credentials/cookies across sessions. Install the optional runtime before enabling it:
+
+```bash
+npm install playwright
+npx playwright install chromium
+```
+
+DeepSeek subagents are also opt-in. Set the DeepSeek API credential environment variable named `DEEPSEEK_API_KEY`, optionally set `DEEPSEEK_MODEL`, and use full tool mode. If the key is absent, CodexPro does not register usable `subagent_*` tools and never falls back to another provider. Other controls are `CODEXPRO_SUBAGENTS_ENABLED`, `CODEXPRO_MAX_SUBAGENTS`, `CODEXPRO_MAX_AGENT_DEPTH`, and `CODEXPRO_WORKTREE_ROOT`.
+
+Roles are `explorer`, `reviewer`, `tester`, and `implementer`. Only implementers receive an isolated Git worktree. Their returned unified diff is treated as untrusted, checked for disallowed/sensitive paths, validated with `git apply --check`, and applied only to that worktree; it is never automatically merged into the primary workspace. Repository content sent to DeepSeek is explicitly path-scoped and redacted, and obvious secret paths such as environment files, private keys, credential stores, and SSH/cloud credentials are excluded.
+
+Example delegated investigations:
+
+```text
+subagent_spawn({
+  role: "explorer",
+  task: "Investigate why HTTP/2 upstream negotiation is failing.",
+  paths: ["src/upstream.rs"]
+})
+
+subagent_spawn({
+  role: "implementer",
+  task: "Fix the parser regression and return a unified diff plus tests to verify.",
+  paths: ["src/parser.ts", "test/parser.test.ts"]
+})
+```
+
+Subagent output is evidence-oriented working material, not authority. The parent agent should independently inspect source, Git state/diffs, test output, and browser evidence before accepting a result.
+
 ## Development
 
 ```bash
 npm install
+npm test
 npm run build
 npm run smoke
 npm run stress

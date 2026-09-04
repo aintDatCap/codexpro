@@ -19,6 +19,10 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
+import { GitService, WorktreeManager } from "./gitService.js";
+import { BrowserManager } from "./browserManager.js";
+import { DeepSeekBackend } from "./deepseekBackend.js";
+import { AgentManager } from "./agentManager.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -340,7 +344,8 @@ const STANDARD_TOOL_NAMES = [
   "read_handoff",
   "wait_for_handoff",
   "export_pro_context",
-  "handoff_to_agent"
+  "handoff_to_agent",
+  "git"
 ] as const;
 
 const FULL_TOOL_NAMES = [
@@ -365,7 +370,14 @@ const FULL_TOOL_NAMES = [
   "bash",
   "git_status",
   "git_diff",
+  "git",
   "show_changes",
+  "browser",
+  "subagent_spawn",
+  "subagent_message",
+  "subagent_status",
+  "subagent_result",
+  "subagent_cancel",
   "read_handoff",
   "wait_for_handoff",
   "codex_context",
@@ -382,6 +394,11 @@ const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   "apply_patch",
   "import_file",
   "bash",
+  "git",
+  "browser",
+  "subagent_spawn",
+  "subagent_message",
+  "subagent_cancel",
   "export_pro_context",
   "handoff_to_agent",
   "handoff_to_codex"
@@ -394,7 +411,7 @@ function codexSessionToolNames(config: CodexProConfig): string[] {
     : ["codex_sessions"];
 }
 
-function toolNamesForMode(config: CodexProConfig): string[] {
+export function toolNamesForMode(config: CodexProConfig): string[] {
   const names: string[] =
     config.toolMode === "full"
       ? [...FULL_TOOL_NAMES]
@@ -415,6 +432,17 @@ function toolNamesForMode(config: CodexProConfig): string[] {
   if (!config.analysisEnabled) {
     const analysisIndex = names.indexOf("inspect_workspace");
     if (analysisIndex !== -1) names.splice(analysisIndex, 1);
+  }
+  if (!config.browserEnabled) {
+    const browserIndex = names.indexOf("browser");
+    if (browserIndex !== -1) names.splice(browserIndex, 1);
+  }
+  if (!config.subagentsEnabled || !config.deepseekApiKey) {
+    for (const name of [...names]) {
+      if (!name.startsWith("subagent_")) continue;
+      const index = names.indexOf(name);
+      if (index !== -1) names.splice(index, 1);
+    }
   }
   if (config.connectionTest) {
     for (const hiddenTool of CONNECTION_TEST_HIDDEN_TOOLS) {
@@ -450,6 +478,8 @@ function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
   if (name === "codex_sessions") return config.codexSessions !== "off";
   if (name === "read_codex_session") return config.codexSessions === "read";
   if (name === "inspect_workspace" && !config.analysisEnabled) return false;
+  if (name === "browser" && !config.browserEnabled) return false;
+  if (name.startsWith("subagent_") && (!config.subagentsEnabled || !config.deepseekApiKey)) return false;
   if (name === "handoff_to_agent" && config.writeMode === "handoff") return true;
   if (config.toolMode === "full") return true;
   if (config.toolMode === "minimal") return MINIMAL_TOOLS.has(name);
@@ -482,7 +512,7 @@ function serverInstructions(config: CodexProConfig): string {
   const bashInstruction =
     config.bashMode === "off"
       ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
-      : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
+      : "5. Bash is available for normal local development commands. In safe mode catastrophic filesystem/system/destructive-Git patterns are blocked; prefer structured Git/file tools where practical.";
 
   return [
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
@@ -930,6 +960,12 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
+  const gitService = new GitService(config, guard);
+  const worktreeManager = new WorktreeManager(config);
+  const browserManager = new BrowserManager(config, guard);
+  const agentManager = config.subagentsEnabled && config.deepseekApiKey
+    ? new AgentManager(config, guard, new DeepSeekBackend(config.deepseekApiKey))
+    : undefined;
   const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
@@ -1053,6 +1089,13 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         connectionTest: config.connectionTest,
         analysisEnabled: config.analysisEnabled,
         analysisLimits: config.analysisLimits,
+        browserEnabled: config.browserEnabled,
+        deepseekConfigured: Boolean(config.deepseekApiKey),
+        deepseekModel: config.deepseekModel,
+        subagentsEnabled: config.subagentsEnabled,
+        maxSubagents: config.maxSubagents,
+        maxAgentDepth: config.maxAgentDepth,
+        worktreeRoot: config.worktreeRoot ?? null,
         inheritEnv: config.inheritEnv,
         contextDir: config.contextDir,
         maxReadBytes: config.maxReadBytes,
@@ -1219,10 +1262,10 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
             const pwd = await runBash(config, guard, workspace, "pwd", bashProbeOptions);
             if (config.bashMode === "safe") {
               try {
-                await runBash(config, guard, workspace, "ls $HOME", bashProbeOptions);
-                check("bash policy", "fail", "safe bash allowed environment expansion unexpectedly");
+                await runBash(config, guard, workspace, "rm -rf .", bashProbeOptions);
+                check("bash policy", "fail", "safe bash allowed catastrophic workspace deletion unexpectedly");
               } catch {
-                check("bash policy", pwd.exitCode === 0 ? "pass" : "warn", "safe bash allowed pwd and blocked environment expansion");
+                check("bash policy", pwd.exitCode === 0 ? "pass" : "warn", "safe bash allowed normal commands and blocked catastrophic workspace deletion");
               }
             } else {
               check("bash policy", pwd.exitCode === 0 ? "warn" : "fail", "full bash is enabled; use only for trusted local repos");
@@ -1455,6 +1498,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         root: summary.root,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
+        agents_files: summary.agentsFiles,
+        instruction_fingerprint: summary.instructionFingerprint,
         skills: summary.skills,
         skill_inventory: summary.skillInventory,
         skill_counts: summary.skillCounts,
@@ -1511,6 +1556,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         root: summary.root,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
+        agents_files: summary.agentsFiles,
+        instruction_fingerprint: summary.instructionFingerprint,
         skills: summary.skills,
         skill_inventory: summary.skillInventory,
         skill_counts: summary.skillCounts,
@@ -1560,6 +1607,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         root: workspace.root,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
+        agents_files: summary.agentsFiles,
+        instruction_fingerprint: summary.instructionFingerprint,
         skills: summary.skills,
         skill_inventory: summary.skillInventory,
         skill_counts: summary.skillCounts,
@@ -2033,7 +2082,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Bash",
       description:
-        "Run one allowlisted verification command in the workspace, such as tests, build, lint, typecheck, or a project script. Do not use for git status/diff or file inspection; use show_changes, tree, search, and read instead. Do not chain commands with &&, pipes, redirects, or shell file readers.",
+        "Run a local development command in the workspace. In safe mode, ordinary compilers, package managers, test runners, scripts, and command chains are allowed while obviously catastrophic filesystem, disk, system, and destructive Git operations are blocked. Prefer structured Git and file tools when they cover the operation.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         command: z.string().describe("Command to run."),
@@ -2156,6 +2205,143 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       });
     }
   );
+
+  registerCodexTool(
+    config,
+    server,
+    "git",
+    {
+      title: "Git",
+      description: "Structured Git operations for inspection and controlled local writes. Destructive history rewriting, force operations, and arbitrary git arguments are intentionally not exposed.",
+      inputSchema: {
+        workspace_id: z.string().optional(),
+        action: z.enum(["status", "current_branch", "branches", "log", "show", "blame", "root", "changed_files", "create_branch", "switch_branch", "stage", "unstage", "restore", "commit", "worktree_create", "worktree_remove", "worktree_list"]),
+        path: z.string().optional(), ref: z.string().optional(), count: z.number().int().min(1).max(100).optional(),
+        name: z.string().optional(), start_point: z.string().optional(), create: z.boolean().optional(),
+        files: z.array(z.string()).max(200).optional(), message: z.string().optional(), worktree_id: z.string().optional(), branch: z.string().optional()
+      },
+      annotations: LOCAL_WRITE_ANNOTATIONS
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const action = args.action as string;
+      const writes = new Set(["create_branch", "switch_branch", "stage", "unstage", "restore", "commit", "worktree_create", "worktree_remove"]);
+      if (writes.has(action) && config.writeMode !== "workspace") throw new CodexProError(`Git write action ${action} requires CODEXPRO_WRITE_MODE=workspace.`);
+      let result: any;
+      switch (action) {
+        case "status": result = gitService.status(workspace); break;
+        case "current_branch": result = gitService.currentBranch(workspace); break;
+        case "branches": result = gitService.branches(workspace); break;
+        case "log": result = gitService.log(workspace, args.count); break;
+        case "show": result = gitService.show(workspace, args.ref); break;
+        case "blame": result = gitService.blame(workspace, String(args.path ?? "")); break;
+        case "root": result = gitService.root(workspace); break;
+        case "changed_files": result = gitService.changedFiles(workspace); break;
+        case "create_branch": result = gitService.createBranch(workspace, String(args.name ?? ""), args.start_point); break;
+        case "switch_branch": result = gitService.switchBranch(workspace, String(args.name ?? ""), parseBool(args.create, false)); break;
+        case "stage": result = gitService.stage(workspace, args.files ?? []); break;
+        case "unstage": result = gitService.unstage(workspace, args.files ?? []); break;
+        case "restore": result = gitService.restore(workspace, args.files ?? []); break;
+        case "commit": result = gitService.commit(workspace, String(args.message ?? "")); break;
+        case "worktree_create": result = worktreeManager.create(workspace, String(args.worktree_id ?? `worktree-${Date.now()}`), args.branch); break;
+        case "worktree_remove": worktreeManager.remove(workspace, String(args.worktree_id ?? "")); result = { removed: args.worktree_id }; break;
+        case "worktree_list": result = { worktrees: worktreeManager.list() }; break;
+        default: throw new CodexProError(`Unsupported git action: ${action}`);
+      }
+      const body = typeof result?.stdout === "string" ? result.stdout || result.stderr || "(no output)" : JSON.stringify(result, null, 2);
+      return textResult(`# Git ${action}\n\n${body}`, { workspace_id: workspace.id, action, result });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "browser",
+    {
+      title: "Browser",
+      description: "Operate an isolated Playwright Chromium session. Browser state is isolated per session and credentials/cookies are never inherited automatically.",
+      inputSchema: {
+        workspace_id: z.string().optional(), action: z.enum(["open", "navigate", "snapshot", "click", "type", "select", "scroll", "wait", "tab", "screenshot", "close", "list"]),
+        session_id: z.string().optional(), url: z.string().optional(), selector: z.string().optional(), text: z.string().optional(), submit: z.boolean().optional(), values: z.array(z.string()).optional(),
+        x: z.number().optional(), y: z.number().optional(), timeout_ms: z.number().int().min(100).max(120000).optional(), tab_action: z.enum(["new", "list", "switch", "close"]).optional(), index: z.number().int().min(0).optional(),
+        output_path: z.string().optional(), full_page: z.boolean().optional()
+      },
+      annotations: BASH_ANNOTATIONS
+    },
+    async (args) => {
+      const action = args.action as string; const id = String(args.session_id ?? ""); const workspace = workspaces.getWorkspace(args.workspace_id); let result: any;
+      switch (action) {
+        case "open": result = await browserManager.open(args.session_id, args.url); break;
+        case "navigate": result = await browserManager.navigate(id, String(args.url ?? "")); break;
+        case "snapshot": result = await browserManager.snapshot(id); break;
+        case "click": result = await browserManager.click(id, String(args.selector ?? "")); break;
+        case "type": result = await browserManager.type(id, String(args.selector ?? ""), String(args.text ?? ""), parseBool(args.submit, false)); break;
+        case "select": result = await browserManager.select(id, String(args.selector ?? ""), args.values ?? []); break;
+        case "scroll": result = await browserManager.scroll(id, Number(args.x ?? 0), Number(args.y ?? 600)); break;
+        case "wait": result = await browserManager.wait(id, args.selector, args.timeout_ms); break;
+        case "tab": result = await browserManager.tab(id, args.tab_action ?? "list", args.index); break;
+        case "screenshot": result = await browserManager.screenshot(id, workspace, String(args.output_path ?? `${config.contextDir}/browser-${Date.now()}.png`), parseBool(args.full_page, true)); break;
+        case "close": await browserManager.close(id); result = { closed: id }; break;
+        case "list": result = { sessions: browserManager.list() }; break;
+        default: throw new CodexProError(`Unsupported browser action: ${action}`);
+      }
+      return textResult(`# Browser ${action}\n\n${JSON.stringify(result, null, 2)}`, { workspace_id: workspace.id, action, result });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "subagent_spawn",
+    {
+      title: "Spawn Subagent",
+      description: "Spawn a persistent DeepSeek subagent with scoped repository context. Its result is untrusted and must be independently verified. Not registered without a DeepSeek API key.",
+      inputSchema: { workspace_id: z.string().optional(), task: z.string(), role: z.enum(["explorer", "reviewer", "tester", "implementer"]), paths: z.array(z.string()).max(20).optional(), context: z.string().max(20000).optional() },
+      annotations: BASH_ANNOTATIONS
+    },
+    async (args) => {
+      if (!agentManager) throw new CodexProError("DeepSeek subagents are unavailable.");
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const agent = await agentManager.spawn(workspace, { task: args.task, role: args.role, paths: args.paths, context: args.context });
+      return textResult(`# Subagent ${agent.id}\n\nState: ${agent.state}\nRole: ${agent.role}\nSummary: ${agent.result?.summary ?? agent.error ?? "no result"}\n\nUNTRUSTED: verify source, diff, tests, Git state, and browser evidence independently.`, { id: agent.id, state: agent.state, role: agent.role, model: agent.model, worktree: agent.worktree ?? null, result: agent.result ?? null, error: agent.error ?? null, untrusted: true });
+    }
+  );
+
+  registerCodexTool(config, server, "subagent_message", {
+    title: "Message Subagent", description: "Send a follow-up to an existing persistent DeepSeek subagent.", inputSchema: { id: z.string(), message: z.string() }, annotations: BASH_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager) throw new CodexProError("DeepSeek subagents are unavailable.");
+    const agent = await agentManager.message(args.id, args.message);
+    return textResult(`# Subagent ${agent.id}\n\nState: ${agent.state}\nSummary: ${agent.result?.summary ?? agent.error ?? "no result"}`, { id: agent.id, state: agent.state, result: agent.result ?? null, error: agent.error ?? null, untrusted: true });
+  });
+
+  registerCodexTool(config, server, "subagent_status", {
+    title: "Subagent Status", description: "Inspect one or all subagent states.", inputSchema: { id: z.string().optional() }, annotations: READ_ONLY_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager) throw new CodexProError("DeepSeek subagents are unavailable.");
+    const agents = args.id ? [agentManager.get(args.id)] : agentManager.list();
+    const status = agents.map((agent) => ({ id: agent.id, role: agent.role, state: agent.state, model: agent.model, created_at: agent.createdAt, worktree: agent.worktree ?? null, error: agent.error ?? null }));
+    return textResult(`# Subagent Status\n\n${JSON.stringify(status, null, 2)}`, { agents: status });
+  });
+
+  registerCodexTool(config, server, "subagent_result", {
+    title: "Subagent Result", description: "Return the latest evidence-oriented subagent result. Always independently verify it.", inputSchema: { id: z.string() }, annotations: READ_ONLY_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager) throw new CodexProError("DeepSeek subagents are unavailable.");
+    const agent = agentManager.get(args.id);
+    return textResult(`# Subagent Result ${agent.id}\n\n${agent.result?.rawResponse ?? agent.error ?? "No result yet."}\n\nUNTRUSTED: independently verify all claims.`, { id: agent.id, state: agent.state, result: agent.result ?? null, error: agent.error ?? null, untrusted: true });
+  });
+
+  registerCodexTool(config, server, "subagent_cancel", {
+    title: "Cancel Subagent", description: "Cancel a running DeepSeek subagent request. Optionally clean up its CodexPro-owned worktree; cleanup may discard unmerged child-worktree changes and is explicit.",
+    inputSchema: { id: z.string(), workspace_id: z.string().optional(), cleanup_worktree: z.boolean().optional() }, annotations: LOCAL_WRITE_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager) throw new CodexProError("DeepSeek subagents are unavailable.");
+    const agent = await agentManager.cancel(args.id);
+    const cleanup = parseBool(args.cleanup_worktree, false);
+    if (cleanup && agent.worktree) agentManager.cleanup(workspaces.getWorkspace(args.workspace_id), agent.id);
+    return textResult(`# Subagent Cancelled\n\n${agent.id}${cleanup && agent.worktree ? "\nOwned worktree cleaned up." : ""}`, { id: agent.id, state: agent.state, worktree_cleaned: cleanup && Boolean(agent.worktree) });
+  });
 
   registerCodexTool(
     config,
@@ -2487,7 +2673,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         include_ai_bridge: z.boolean().optional().describe("Include .ai-bridge plan, agent status, diff, decisions, questions, and execution log. Default: true."),
         include_git: z.boolean().optional().describe("Include git status. Default: true."),
         include_diff: z.boolean().optional().describe("Include full git diff. Default: false for speed/noise."),
-        max_agent_bytes: z.number().int().min(1000).max(200000).optional().describe("Maximum bytes per AGENTS file. Default: 60000.")
+        max_agent_bytes: z.number().int().min(1000).max(200000).optional().describe("Maximum bytes per AGENTS file. Default: 60000."),
+        instruction_fingerprint: z.string().optional().describe("Previously returned instruction fingerprint. When unchanged, CodexPro suppresses re-sending the instruction bodies.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
@@ -2503,13 +2690,16 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         includeAiBridge: args.include_ai_bridge,
         includeGit: args.include_git,
         includeDiff: parseBool(args.include_diff, false),
-        maxAgentBytes: args.max_agent_bytes
+        maxAgentBytes: args.max_agent_bytes,
+        instructionFingerprint: args.instruction_fingerprint
       });
       return textResult(context.text, {
         workspace_id: context.workspaceId,
         root: context.root,
         target_path: context.targetPath,
         agents_files: context.agentsFiles,
+        instruction_fingerprint: context.instructionFingerprint,
+        instructions_changed: context.instructionsChanged,
         ai_context_files: context.aiContextFiles,
         included_git_status: context.gitStatus !== undefined,
         included_git_diff: context.gitDiff !== undefined,

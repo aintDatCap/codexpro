@@ -6,6 +6,7 @@ import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
 import { CodexProError, PathGuard } from "./guard.js";
 import { redactSensitiveText } from "./redact.js";
+import { assessCommandSafety } from "./commandSafety.js";
 
 export interface BashResult {
   command: string;
@@ -129,27 +130,16 @@ function isAllowedPackageScript(command: string): boolean {
   return packageScriptPattern.test(command);
 }
 
-function assertSafeCommand(config: CodexProConfig, command: string): void {
+function assertSafeCommand(config: CodexProConfig, workspace: Workspace, command: string): void {
   if (config.bashMode === "off") {
     throw new CodexProError("bash tool is disabled. Start with CODEXPRO_BASH_MODE=safe or CODEXPRO_BASH_MODE=full to enable it.");
   }
   if (config.bashMode === "full") return;
-
-  const raw = command.trim();
-  const normalized = compact(command);
-  for (const pattern of SAFE_BLOCKED_PATTERNS) {
-    if (pattern.test(raw) || pattern.test(normalized)) {
-      throw new CodexProError(
-        `Command is blocked in CODEXPRO_BASH_MODE=safe: ${normalized}\n` +
-          "Use separate read/search/git tools, or restart with CODEXPRO_BASH_MODE=full only for trusted repos."
-      );
-    }
-  }
-  if (!startsWithAllowedPrefix(normalized)) {
+  const decision = assessCommandSafety(command, workspace);
+  if (!decision.allowed) {
     throw new CodexProError(
-      `Command is not in the safe bash allowlist: ${normalized}\n` +
-        "Allowed examples: ls, find, git status, git diff, npm test, npm run typecheck, npm run build:clients, pytest, go test, cargo test. Use read/search tools for file contents. " +
-        "Use CODEXPRO_BASH_MODE=full for trusted local automation."
+      `Command is blocked by the default safety policy: ${compact(command)}\nReason: ${decision.reason ?? "unsafe command"}\n` +
+        "CODEXPRO_BASH_MODE=safe permits normal development commands but rejects obviously destructive system, filesystem, and Git operations."
     );
   }
 }
@@ -273,7 +263,7 @@ export async function runBash(
 ): Promise<BashResult> {
   if (!command?.trim()) throw new CodexProError("command is required.");
   const bashSessionId = assertBashSession(config, options.sessionId);
-  assertSafeCommand(config, command);
+  assertSafeCommand(config, workspace, command);
   const cwdResolved = guard.resolve(workspace, options.cwd ?? ".");
   const cwd = cwdResolved.absPath;
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, config.maxBashTimeoutMs));
