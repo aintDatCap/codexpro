@@ -7,6 +7,7 @@ import type { Workspace } from "./guard.js";
 import { CodexProError, PathGuard } from "./guard.js";
 import { redactSensitiveText } from "./redact.js";
 import { assessCommandSafety } from "./commandSafety.js";
+import { shellInvocation, type CommandShell } from "./commandShell.js";
 
 export interface BashResult {
   command: string;
@@ -18,6 +19,7 @@ export interface BashResult {
   stderr: string;
   truncated: boolean;
   bashSessionId?: string;
+  shell?: string;
 }
 
 const SAFE_ALLOWED_PREFIXES = [
@@ -197,7 +199,7 @@ export function makeRestrictedBashEnv(
   }
   const home = resolveUsableHomeDir(env);
   const restricted: NodeJS.ProcessEnv = {
-    PATH: env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    PATH: env.PATH ?? env.Path ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: home,
     USER: env.USER ?? env.USERNAME ?? "",
     SHELL: env.SHELL ?? "/bin/bash",
@@ -207,6 +209,10 @@ export function makeRestrictedBashEnv(
     CI: "1"
   };
   if (process.platform === "win32") {
+    for (const key of ["SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP"]) {
+      const actual = Object.keys(env).find((name) => name.toLowerCase() === key.toLowerCase());
+      if (actual && env[actual]) restricted[key] = env[actual];
+    }
     restricted.USERPROFILE = home;
     const appData = isUsableAbsoluteDir(env.APPDATA);
     const localAppData = isUsableAbsoluteDir(env.LOCALAPPDATA);
@@ -223,10 +229,6 @@ export function makeRestrictedBashEnv(
 
 function makeEnv(config: CodexProConfig): NodeJS.ProcessEnv {
   return makeRestrictedBashEnv(config);
-}
-
-function bashExecutable(): string {
-  return fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
 }
 
 function trimOutput(value: string, maxBytes: number): { value: string; truncated: boolean } {
@@ -259,22 +261,25 @@ export async function runBash(
   guard: PathGuard,
   workspace: Workspace,
   command: string,
-  options: { cwd?: string; timeoutMs?: number; sessionId?: string } = {}
+  options: { cwd?: string; timeoutMs?: number; sessionId?: string; shell?: CommandShell } = {}
 ): Promise<BashResult> {
   if (!command?.trim()) throw new CodexProError("command is required.");
   const bashSessionId = assertBashSession(config, options.sessionId);
   assertSafeCommand(config, workspace, command);
   const cwdResolved = guard.resolve(workspace, options.cwd ?? ".");
   const cwd = cwdResolved.absPath;
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new CodexProError(`Working directory does not exist or is not a directory: ${options.cwd ?? "."}`);
+  const invocation = shellInvocation(options.shell ?? config.commandShell ?? "auto", command, cwd, config.wslDistribution);
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, config.maxBashTimeoutMs));
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bashExecutable(), ["-lc", command], {
+    const child = spawn(invocation.command, invocation.args, {
       cwd,
       env: makeEnv(config),
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true
     });
 
@@ -312,6 +317,8 @@ export async function runBash(
     }, timeoutMs);
     timer.unref();
 
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       stdout = appendBounded(stdout, chunk);
       if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
@@ -320,7 +327,11 @@ export async function runBash(
       stderr = appendBounded(stderr, chunk);
       if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      reject(new CodexProError(`Could not start ${invocation.shell}: ${error.message}`));
+    });
     child.on("close", (exitCode, signal) => {
       closed = true;
       clearTimeout(timer);
@@ -332,6 +343,7 @@ export async function runBash(
       const err = trimOutput(redactSensitiveText(stderr), config.maxOutputBytes);
       resolve({
         command,
+        shell: invocation.shell,
         cwd: path.relative(workspace.root, cwd) || ".",
         exitCode,
         signal,

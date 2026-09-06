@@ -1078,6 +1078,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         widgetDomain: config.widgetDomain,
         authEnabled: Boolean(config.authToken),
         bashMode: config.bashMode,
+        commandShell: config.commandShell ?? "auto",
+        wslDistribution: config.wslDistribution ?? null,
         bashTranscript: config.bashTranscript,
         bashSessionId: config.bashSessionId ?? null,
         requireBashSession: config.requireBashSession,
@@ -2086,6 +2088,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         command: z.string().describe("Command to run."),
+        shell: z.enum(["auto", "bash", "powershell", "cmd", "wsl"]).optional().describe("auto uses PowerShell on Windows and Bash on Linux/macOS/WSL. wsl runs Bash in the configured Windows WSL distribution. Use syntax appropriate to the selected shell."),
         session_id: z.string().optional().describe(config.requireBashSession && config.bashSessionId ? `Required bash session id for this server: ${config.bashSessionId}.` : "Optional bash session id. If configured on the server, a provided value must match it."),
         cwd: z.string().optional().describe("Working directory relative to workspace root. Default: ."),
         timeout_ms: z
@@ -2107,6 +2110,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const result = await runBash(config, guard, workspace, String(args.command ?? ""), {
         cwd: args.cwd,
+        shell: args.shell,
         timeoutMs: args.timeout_ms,
         sessionId: args.session_id
       });

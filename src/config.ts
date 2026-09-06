@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { commandShell, type CommandShell } from "./commandShell.js";
 import { DEFAULT_ANALYSIS_LIMITS, type AnalysisLimits } from "./analysis/types.js";
 
 export type BashMode = "off" | "safe" | "full";
@@ -19,6 +20,8 @@ export interface CodexProConfig {
   authToken?: string;
   requireHttpToken: boolean;
   bashMode: BashMode;
+  commandShell?: CommandShell;
+  wslDistribution?: string;
   bashTranscript: BashTranscriptMode;
   bashSessionId?: string;
   requireBashSession: boolean;
@@ -321,6 +324,8 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     authToken,
     requireHttpToken,
     bashMode: bashModeFrom(bashArg ?? process.env.CODEXPRO_BASH_MODE),
+    commandShell: commandShell(typeof args.shell === "string" ? args.shell : process.env.CODEXPRO_SHELL),
+    wslDistribution: (typeof args["wsl-distribution"] === "string" ? args["wsl-distribution"] : process.env.CODEXPRO_WSL_DISTRIBUTION) || undefined,
     bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.CODEXPRO_BASH_TRANSCRIPT),
     bashSessionId,
     requireBashSession,

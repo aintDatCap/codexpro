@@ -22,7 +22,7 @@ export class CodexProError extends Error {
 
 export function isSubpath(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 export function normalizeRelPath(relPath: string): string {
@@ -141,8 +141,8 @@ export class PathGuard {
     const rel = normalizeRelPath(relPath).replace(/^\.\//, "");
     if (!rel || rel === ".") return false;
     return this.config.blockedGlobs.some((glob) =>
-      minimatch(rel, glob, { dot: true, nocase: false, matchBase: false }) ||
-      minimatch(path.basename(rel), glob, { dot: true, nocase: false, matchBase: true })
+      minimatch(rel, glob, { dot: true, nocase: process.platform === "win32", matchBase: false }) ||
+      minimatch(path.basename(rel), glob, { dot: true, nocase: process.platform === "win32", matchBase: true })
     );
   }
 

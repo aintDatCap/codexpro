@@ -111,7 +111,7 @@ try {
     assert.equal(implementer.state, 'completed');
     assert.ok(implementer.worktree, 'implementer must receive an isolated worktree');
     assert.equal(await fs.readFile(path.join(tmp, 'tracked.txt'), 'utf8'), 'base\n', 'primary workspace must not be edited');
-    assert.equal(await fs.readFile(path.join(implementer.worktree.path, 'tracked.txt'), 'utf8'), 'agent change\n', `validated patch must apply in worktree: ${JSON.stringify(implementer.result.commandsRun)}`);
+    assert.equal((await fs.readFile(path.join(implementer.worktree.path, 'tracked.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'agent change\n', `validated patch must apply in worktree: ${JSON.stringify(implementer.result.commandsRun)}`);
     assert.deepEqual(implementer.result.changedFiles, ['tracked.txt']);
     agents.cleanup(workspace, implementer.id);
   }

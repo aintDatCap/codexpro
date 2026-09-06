@@ -71,6 +71,26 @@ With workspace write mode (the normal agent setup):
 - write plans under `.ai-bridge`
 - export a context bundle for chats that cannot call tools
 
+## Windows and WSL
+
+CodexPro runs with Node.js 20+ on native Windows or inside a WSL Linux distribution. Native Windows commands use Windows PowerShell by default; Linux, macOS, and servers launched inside WSL use Bash. The MCP tool keeps its `bash` name and accepts `shell` and `cwd`:
+
+```json
+{"command":"npm run build","cwd":"packages/web","shell":"powershell"}
+```
+
+Use `shell: "cmd"` for cmd syntax (including `&&`), `shell: "bash"` for an installed Bash, or `shell: "wsl"` to execute Linux commands from a Windows server. PowerShell runs without profiles and uses a process-scoped execution-policy override so npm's PowerShell shims can run. No machine policy is changed.
+
+```powershell
+codexpro start --shell powershell
+codexpro start --shell wsl --wsl-distribution Ubuntu
+codexpro settings set --shell wsl --wsl-distribution Ubuntu
+```
+
+The equivalent environment variables are `CODEXPRO_SHELL` and `CODEXPRO_WSL_DISTRIBUTION`. WSL execution needs a distribution with Bash installed; choose it explicitly if your default is Docker Desktop. Working directories are passed to `wsl.exe --cd` without shell interpolation. For Linux projects, you can also install Node.js and CodexPro inside WSL and run `codexpro start` there using Linux paths. Windows and WSL installations keep their own home-directory settings.
+
+CLI commands launched from a subdirectory discover the Git repository root and reuse its saved settings. A nearer saved project takes precedence. Explicit `--root` or `CODEXPRO_ROOT` keeps that directory as the workspace. MCP command `cwd` is relative to the selected workspace, must exist, and cannot escape through traversal or symlinks.
+
 ## Multiple projects
 
 One CodexPro process can allow more than one repo:

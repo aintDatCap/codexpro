@@ -10,7 +10,7 @@ export interface CommandSafetyDecision {
 
 const CATASTROPHIC_PROGRAMS = new Set([
   "mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs",
-  "fdisk", "sfdisk", "parted", "diskpart", "shutdown", "reboot", "halt", "poweroff"
+  "fdisk", "sfdisk", "parted", "diskpart", "format", "format-volume", "clear-disk", "initialize-disk", "shutdown", "restart-computer", "stop-computer", "reboot", "halt", "poweroff"
 ]);
 
 function compact(value: string): string {
@@ -26,9 +26,12 @@ function tokenize(command: string): string[] {
   let current = "";
   let quote = "";
   let escaped = false;
-  for (const char of command.trim()) {
+  const input = command.trim();
+  for (let position = 0; position < input.length; position += 1) {
+    const char = input[position];
     if (escaped) { current += char; escaped = false; continue; }
-    if (char === "\\" && quote !== "'") { escaped = true; continue; }
+    const windowsPath = /^[A-Za-z]:/.test(current) || /^\.{1,2}(?:\\|$)/.test(current) || current.startsWith("\\") || (current === "" && input[position + 1] === "\\");
+    if (char === "\\" && quote !== "'" && !windowsPath) { escaped = true; continue; }
     if (quote) {
       if (char === quote) quote = "";
       else current += char;
@@ -66,14 +69,18 @@ function dangerousDeleteTarget(raw: string, workspace: Workspace): boolean {
 function inspectSegment(segment: string, workspace: Workspace): string | undefined {
   const tokens = tokenize(segment);
   if (!tokens.length) return undefined;
-  const sensitiveToken = tokens.find((token) => /(?:^|[/:])(?:\.env(?:[./:]|$)|\.ssh(?:[/:]|$)|\.npmrc(?:$|[/:])|id_(?:rsa|ed25519)(?:$|[.:/])|[^/:]+\.(?:pem|key)(?:$|[/:]))/i.test(token));
+  const sensitiveToken = tokens.find((token) => /(?:^|[/:])(?:\.env(?:[./:]|$)|\.ssh(?:[/:]|$)|\.npmrc(?:$|[/:])|id_(?:rsa|ed25519)(?:$|[.:/])|[^/:]+\.(?:pem|key)(?:$|[/:]))/i.test(token.replace(/\\/g, "/")));
   if (sensitiveToken) return `direct shell access to sensitive path is blocked: ${sensitiveToken}`;
   if (tokens.some((token) => token === "$HOME" || token === "${HOME}" || token === "~" || token.startsWith("~/"))) return "home-directory expansion is blocked in safe mode";
   let index = 0;
   while (tokens[index] && /^(?:env|command|builtin|nohup)$/i.test(tokens[index])) index += 1;
   if (/^sudo$/i.test(tokens[index] ?? "")) return "sudo execution is blocked by the default command policy";
-  const exe = path.basename(tokens[index] ?? "").toLowerCase();
+  const exe = (tokens[index] ?? "").split(/[\\/]/).at(-1)!.toLowerCase().replace(/\.(?:exe|cmd|bat)$/, "");
   const args = tokens.slice(index + 1);
+
+  if (["remove-item", "ri", "rd", "rmdir", "del", "erase"].includes(exe)) {
+    return "Use structured file tools for Windows deletion in safe mode, or full mode in a trusted repository";
+  }
 
   if (CATASTROPHIC_PROGRAMS.has(exe)) return `${exe} is a system/disk destructive command`;
   if (exe === "dd" && args.some((arg) => /^of=(?:\/dev\/|\\\\\.\\PhysicalDrive)/i.test(arg))) return "raw block-device writes are blocked";

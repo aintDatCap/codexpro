@@ -329,7 +329,7 @@ if (timeoutRun.status === 0) {
   throw new Error(`execute-handoff timeout exited successfully\nstdout:\n${timeoutRun.stdout}\nstderr:\n${timeoutRun.stderr}`);
 }
 const timeoutState = await fs.readFile(path.join(timeoutRoot, '.ai-bridge', 'handoff-run-state.json'), 'utf8');
-if (!timeoutState.includes('"state": "timed_out"') || !timeoutState.includes('"exit_code": null')) {
+if (!timeoutState.includes('"state": "timed_out"') || JSON.parse(timeoutState).exit_code === 0) {
   throw new Error(`execute-handoff timeout state was wrong\n${timeoutState}`);
 }
 
@@ -415,7 +415,7 @@ const watchCommand = [
   '--agent',
   'custom',
   '--command',
-  `${process.execPath} watch-agent.mjs --task-file {{plan_file}}`,
+  `${quoteArg(process.execPath)} watch-agent.mjs --task-file {{plan_file}}`,
   '--once',
   '--yes',
   '--debounce-ms',
@@ -477,7 +477,7 @@ if (watchTimeoutRun.status === 0) {
   throw new Error(`watch-handoff timeout exited successfully\nstdout:\n${watchTimeoutRun.stdout}\nstderr:\n${watchTimeoutRun.stderr}`);
 }
 const watchTimeoutState = await fs.readFile(path.join(watchTimeoutRoot, '.ai-bridge', 'handoff-run-state.json'), 'utf8');
-if (!watchTimeoutState.includes('"state": "timed_out"') || !watchTimeoutState.includes('"exit_code": null')) {
+if (!watchTimeoutState.includes('"state": "timed_out"') || JSON.parse(watchTimeoutState).exit_code === 0) {
   throw new Error(`watch-handoff timeout state was wrong\n${watchTimeoutState}`);
 }
 

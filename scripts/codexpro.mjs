@@ -74,6 +74,8 @@ Options:
   --bash <off|safe|full>    Bash mode. Default: safe.
   --no-bash                 Shortcut for --bash off.
   --bash-transcript <compact|full>
+  --shell <auto|powershell|cmd|bash|wsl> Command shell (auto: PowerShell on Windows, Bash elsewhere).
+  --wsl-distribution <name> WSL distribution for --shell wsl (Windows only).
                              Chat transcript for bash results. Default: compact.
                              full prints raw stdout/stderr in chat.
   --full-bash-transcript    Shortcut for --bash-transcript full.
@@ -475,7 +477,7 @@ function printChangeReview(result, json) {
 
 async function runAnalysisCli(command, argv) {
   const args = parseArgs(argv);
-  const root = realDir(args.root ?? process.cwd());
+  const root = workspaceRoot(args);
   const [{ loadConfig }, { PathGuard, WorkspaceManager }, analysis, git] = await Promise.all([
     import(pathToFileURL(path.join(projectRoot, 'dist', 'config.js')).href),
     import(pathToFileURL(path.join(projectRoot, 'dist', 'guard.js')).href),
@@ -503,6 +505,18 @@ function realDir(input) {
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) throw new Error(`Not a directory: ${resolved}`);
   return fs.realpathSync.native(resolved);
+}
+
+function workspaceRoot(args) {
+  if (args.root || process.env.CODEXPRO_ROOT) return realDir(args.root ?? process.env.CODEXPRO_ROOT);
+  const cwd = realDir(process.cwd());
+  const git = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', windowsHide: true });
+  const gitRoot = git.status === 0 ? realDir(git.stdout.trim()) : undefined;
+  for (let current = cwd; ; current = path.dirname(current)) {
+    if (fs.existsSync(profilePathForRoot(current))) return current;
+    if (current === gitRoot || path.dirname(current) === current) break;
+  }
+  return gitRoot ?? cwd;
 }
 
 function configuredProjectRoots(root, args = {}, profile = {}) {
@@ -548,6 +562,13 @@ function validateChoice(flag, value, allowed) {
 function optionalChoice(flag, value, allowed) {
   if (!value) return '';
   return validateChoice(flag, value, allowed);
+}
+
+function shellSettings(args, profile = {}) {
+  return {
+    shell: validateChoice('shell', optionValue(args, profile, 'shell', ['CODEXPRO_SHELL'], 'auto'), ['auto', 'powershell', 'cmd', 'bash', 'wsl']),
+    wslDistribution: optionValue(args, profile, 'wslDistribution', ['CODEXPRO_WSL_DISTRIBUTION'], '')
+  };
 }
 
 function optionalWriteOption(args, profile, mode) {
@@ -1110,6 +1131,7 @@ function spawnLogged(name, command, args, options = {}) {
   const invocation = processInvocation(command, args);
   const child = spawn(invocation.command, invocation.args, {
     ...spawnOptions,
+    windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments
   });
@@ -1249,7 +1271,7 @@ function writeQuickTunnelCredentials(tunnel) {
 
 function killProcess(child) {
   if (!child || child.killed) return;
-  if (child.codexproKillTree && child.pid) {
+  if (process.platform === 'win32' && child.pid) {
     const result = spawnSync('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
       stdio: 'ignore',
       windowsHide: true
@@ -1641,6 +1663,7 @@ function runProcessCaptured(command, args, options) {
     const invocation = processInvocation(command, args);
     const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
+      windowsHide: true,
       env: { ...process.env, NO_COLOR: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
@@ -1660,10 +1683,11 @@ function runProcessCaptured(command, args, options) {
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (!closed) child.kill('SIGKILL');
-      }, 1500).unref();
+      if (process.platform === 'win32') killProcess(child);
+      else {
+        child.kill('SIGTERM');
+        setTimeout(() => { if (!closed) child.kill('SIGKILL'); }, 1500).unref();
+      }
     }, timeoutMs);
     timer.unref();
 
@@ -1809,7 +1833,7 @@ async function confirmLocalExecution(args, root, commandInfo) {
 }
 
 function loadHandoffExecution(args) {
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   const contextDir = contextDirFromArgs(args);
   const bridgeDir = resolveWorkspaceFile(root, contextDir);
   const planPath = resolveWorkspaceFile(root, path.join(contextDir, 'current-plan.md'));
@@ -2004,7 +2028,7 @@ async function runWatchHandoff(argv) {
     usage();
     return;
   }
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   const contextDir = contextDirFromArgs(args);
   const bridgeDir = resolveWorkspaceFile(root, contextDir);
   const planPath = path.join(bridgeDir, 'current-plan.md');
@@ -2547,7 +2571,7 @@ async function runLoopHandoff(argv) {
     return;
   }
 
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   const contextDir = contextDirFromArgs(args);
   const paths = loopArtifactPaths(root, contextDir);
   const maxIters = numberOption(args.maxIters ?? args.maxIterations, 3, 1, 25);
@@ -2943,7 +2967,7 @@ async function runDoctor(argv) {
     return;
   }
 
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   const profile = args.noProfile ? {} : loadWorkspaceProfile(root);
   const effectiveArgs = { ...profile, ...args };
   const tunnel = optionValue(args, profile, 'tunnel', ['CODEXPRO_TUNNEL'], 'cloudflare');
@@ -3173,6 +3197,7 @@ function profileFromPreference(root, args, profile, preference) {
     ...(preference.cloudflareTokenFile ? { cloudflareTokenFile: preference.cloudflareTokenFile } : {}),
     ...(token ? { token } : {}),
     ...(bash ? { bash } : {}),
+    ...shellSettings(args, profile),
     ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
     ...(codexSessions !== 'off' ? { codexSessions } : {}),
     ...(codexDir ? { codexDir } : {}),
@@ -3297,6 +3322,9 @@ async function runSetupWizard(argv) {
     const tunnelAnswer = await ask(rl, 'Public access: quick, stable, ngrok, tailscale, or local?', defaultTunnel);
     const tunnelChoice = normalizeSetupChoice(tunnelAnswer, ['quick', 'stable', 'ngrok', 'tailscale', 'local'], defaultTunnel);
     const args = ['start', '--root', root, '--port', port, '--mode', mode];
+    const shell = shellSettings(defaults, profile);
+    args.push('--shell', shell.shell);
+    if (shell.wslDistribution) args.push('--wsl-distribution', shell.wslDistribution);
     const bash = optionValue(defaults, profile, 'bash', ['CODEXPRO_BASH_MODE'], '');
     const bashTranscript = bashTranscriptOption(defaults, profile);
     const codexSessions = codexSessionsOption(defaults, profile);
@@ -3401,6 +3429,7 @@ async function runSetupWizard(argv) {
         ...(profileCloudflareTokenFile ? { cloudflareTokenFile: profileCloudflareTokenFile } : {}),
         ...(profileToken ? { token: profileToken } : {}),
         ...(bash ? { bash } : {}),
+        ...shellSettings(defaults, profile),
         ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
         ...(codexSessions !== 'off' ? { codexSessions } : {}),
         ...(codexDir ? { codexDir } : {}),
@@ -3454,6 +3483,8 @@ function printProfile(root, profile) {
     ...(safe.port ? [labelValue('Port', safe.port)] : []),
     ...(safe.mode ? [labelValue('Mode', safe.mode)] : []),
     ...(safe.bash ? [labelValue('Bash', safe.bash)] : []),
+    labelValue('Shell', safe.shell ?? 'auto'),
+    ...(safe.wslDistribution ? [labelValue('WSL distribution', safe.wslDistribution)] : []),
     ...(safe.write ? [labelValue('Write', safe.write)] : []),
     ...(safe.toolMode ? [labelValue('Tool mode', safe.toolMode)] : []),
     ...(safe.toolCards !== undefined ? [labelValue('Tool cards', safe.toolCards ? 'on' : 'off')] : []),
@@ -3534,6 +3565,7 @@ function saveSettingsFromArgs(root, args, profile) {
     ...(cloudflareTokenFile ? { cloudflareTokenFile } : {}),
     ...(token ? { token } : {}),
     ...(bash ? { bash } : {}),
+    ...shellSettings(args, profile),
     ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
     ...(codexSessions !== 'off' ? { codexSessions } : {}),
     ...(codexDir ? { codexDir } : {}),
@@ -3569,7 +3601,7 @@ async function runSettings(argv) {
     usage();
     return;
   }
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   const profile = args.noProfile ? {} : loadWorkspaceProfile(root);
 
   if (action === 'list' || action === 'ls') {
@@ -3889,7 +3921,7 @@ async function main() {
     return;
   }
 
-  const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
+  const root = workspaceRoot(args);
   let profile = args.noProfile ? {} : loadWorkspaceProfile(root);
   profile = await maybeConfigureFirstRun(root, args, profile);
   const effectiveArgs = { ...profile, ...args };
@@ -3959,6 +3991,8 @@ async function main() {
     CODEXPRO_HOST: host,
     CODEXPRO_PORT: port,
     CODEXPRO_BASH_MODE: bash,
+    CODEXPRO_SHELL: shellSettings(args, profile).shell,
+    CODEXPRO_WSL_DISTRIBUTION: shellSettings(args, profile).wslDistribution,
     CODEXPRO_BASH_TRANSCRIPT: bashTranscript,
     CODEXPRO_BASH_SESSION_ID: bashSession,
     CODEXPRO_REQUIRE_BASH_SESSION: requireBashSession ? '1' : '0',
