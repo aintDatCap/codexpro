@@ -691,6 +691,15 @@ try {
     if (firstList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
       throw new Error(`first HTTP session lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
     }
+    const nestedRoot = path.join(alternateRoot, 'nested-reconnect');
+    await fs.mkdir(nestedRoot);
+    await fs.writeFile(path.join(nestedRoot, 'proof.txt'), 'nested reconnect proof');
+    const nested = await callTool(firstClient, 'open_workspace', { root: nestedRoot, include_tree: false });
+    await withClient(mcpUrl, async (reconnected) => {
+      await callTool(reconnected, 'reconnect_workspace', { workspace_id: nested.structuredContent.workspace_id });
+      const proof = await callTool(reconnected, 'read', { path: 'proof.txt' });
+      if (!proof.structuredContent.text.includes('nested reconnect proof')) throw new Error('nested workspace was not recovered');
+    });
   });
 
   await withClient(mcpUrl, async (client) => {

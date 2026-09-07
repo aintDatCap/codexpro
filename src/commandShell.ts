@@ -20,7 +20,7 @@ export function shellInvocation(shell: CommandShell, command: string, cwd: strin
   if (selected === "powershell") {
     const executable = process.platform === "win32"
       ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : "pwsh";
-    const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; ${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`;
+    const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; ${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`;
     return { command: executable, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], shell: selected };
   }
   if (selected === "cmd") {

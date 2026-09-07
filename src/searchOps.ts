@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
 import { CodexProError, PathGuard } from "./guard.js";
-import { listFiles, textScanByteLimit } from "./fsOps.js";
+import { listFiles, readTextFile, textScanByteLimit } from "./fsOps.js";
 import { redactSensitiveText } from "./redact.js";
 import { searchWorkspaceStructured, type AnalysisSearchIntent, type StructuredSearchResult } from "./analysis/index.js";
 
@@ -18,11 +18,14 @@ export interface SearchOptions {
   intent?: AnalysisSearchIntent;
   symbol?: string;
   includeTests?: boolean;
+  caseSensitive?: boolean;
+  contextBefore?: number;
+  contextAfter?: number;
 }
 
 export interface SearchResult {
   text: string;
-  matches: Array<{ path: string; line: number; text: string }>;
+  matches: Array<{ path: string; line: number; text: string; context?: string; contextUnavailable?: string }>;
   truncated: boolean;
   used: "ripgrep" | "node";
   analysis?: StructuredSearchResult;
@@ -45,8 +48,9 @@ function truncateLine(line: string, max = 400): string {
 
 async function runRipgrep(config: CodexProConfig, guard: PathGuard, workspace: Workspace, options: SearchOptions): Promise<SearchResult> {
   const target = guard.resolve(workspace, options.root ?? ".");
-  const args = ["--json", "--line-number", "--with-filename", "--no-heading", "--color=never", "--max-columns", "500", "--max-count", "50", "--max-filesize", String(textScanByteLimit(config))];
+  const args = ["--json", "--line-number", "--with-filename", "--no-heading", "--color=never", "--max-filesize", String(textScanByteLimit(config))];
   if (!options.regex) args.push("--fixed-strings");
+  if (options.caseSensitive === false) args.push("--ignore-case");
   if (options.includeHidden) args.push("--hidden");
   for (const glob of config.blockedGlobs) args.push("-g", `!${glob}`);
   if (options.glob) args.push("-g", options.glob);
@@ -129,7 +133,7 @@ async function runNodeSearch(config: CodexProConfig, guard: PathGuard, workspace
       const lines = buffer.toString("utf8").split(/\r?\n/);
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
-        const hit = line.includes(options.query);
+        const hit = options.caseSensitive === false ? line.toLowerCase().includes(options.query.toLowerCase()) : line.includes(options.query);
         if (hit) {
           visibleMatches += 1;
           if (matches.length < options.maxResults) {
@@ -158,7 +162,10 @@ export async function searchWorkspace(config: CodexProConfig, guard: PathGuard, 
     maxResults: Math.max(1, Math.min(rawOptions.maxResults ?? config.maxSearchResults, config.maxSearchResults)),
     intent: rawOptions.intent,
     symbol: rawOptions.symbol,
-    includeTests: rawOptions.includeTests
+    includeTests: rawOptions.includeTests,
+    caseSensitive: rawOptions.caseSensitive,
+    contextBefore: Math.max(0, Math.min(rawOptions.contextBefore ?? 0, 30)),
+    contextAfter: Math.max(0, Math.min(rawOptions.contextAfter ?? 0, 30))
   };
   let lexical: SearchResult;
   if (await commandExists("rg")) {
@@ -167,6 +174,21 @@ export async function searchWorkspace(config: CodexProConfig, guard: PathGuard, 
     throw new CodexProError("regex search requires ripgrep. Install rg or retry with regex=false.");
   } else {
     lexical = await runNodeSearch(config, guard, workspace, options);
+  }
+  if (options.contextBefore || options.contextAfter) {
+    // Bound excerpt work independently from potentially large result sets.
+    for (const [index, match] of lexical.matches.entries()) {
+      if (index >= 20) { match.contextUnavailable = "Context is limited to the first 20 matches. Narrow the search."; continue; }
+      try {
+        const excerpt = await readTextFile(config, guard, workspace, match.path, {
+          startLine: Math.max(1, match.line - (options.contextBefore ?? 0)),
+          endLine: match.line + (options.contextAfter ?? 0)
+        });
+        match.context = excerpt.text;
+      } catch (error) {
+        match.contextUnavailable = redactSensitiveText(error instanceof Error ? error.message : String(error));
+      }
+    }
   }
   const structuredRequested = rawOptions.intent !== undefined || rawOptions.symbol !== undefined || rawOptions.includeTests !== undefined;
   if (!structuredRequested) return lexical;

@@ -8,10 +8,14 @@ import { CodexProError, PathGuard } from "./guard.js";
 import { redactSensitiveText } from "./redact.js";
 import { assessCommandSafety } from "./commandSafety.js";
 import { shellInvocation, type CommandShell } from "./commandShell.js";
+import type { OutputStore } from "./outputStore.js";
 
 export interface BashResult {
   command: string;
   cwd: string;
+  effective_cwd: string;
+  termination_reason: "timeout" | "output_limit" | "exit";
+  output_resource_id?: string;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   durationMs: number;
@@ -195,7 +199,7 @@ export function makeRestrictedBashEnv(
   env: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
   if (config.inheritEnv) {
-    return { ...env, NO_COLOR: "1", CI: env.CI ?? "1" };
+    return { ...env, NO_COLOR: "1", CI: env.CI ?? "1", PYTHONUTF8: "1" };
   }
   const home = resolveUsableHomeDir(env);
   const restricted: NodeJS.ProcessEnv = {
@@ -205,6 +209,7 @@ export function makeRestrictedBashEnv(
     SHELL: env.SHELL ?? "/bin/bash",
     TMPDIR: isUsableAbsoluteDir(env.TMPDIR) ?? isUsableAbsoluteDir(env.TMP) ?? os.tmpdir(),
     TERM: "dumb",
+    PYTHONUTF8: "1",
     NO_COLOR: "1",
     CI: "1"
   };
@@ -261,7 +266,7 @@ export async function runBash(
   guard: PathGuard,
   workspace: Workspace,
   command: string,
-  options: { cwd?: string; timeoutMs?: number; sessionId?: string; shell?: CommandShell } = {}
+  options: { cwd?: string; timeoutMs?: number; sessionId?: string; shell?: CommandShell; outputStore?: OutputStore } = {}
 ): Promise<BashResult> {
   if (!command?.trim()) throw new CodexProError("command is required.");
   const bashSessionId = assertBashSession(config, options.sessionId);
@@ -290,7 +295,8 @@ export async function runBash(
     let terminationStarted = false;
     let killTimer: NodeJS.Timeout | undefined;
     let observedOutputBytes = 0;
-    const retainedOutputBytes = config.maxOutputBytes + 1;
+    const captureLimit = options.outputStore?.captureBytes ?? config.maxOutputBytes;
+    const retainedOutputBytes = captureLimit + 1;
 
     const terminate = (signal: NodeJS.Signals) => {
       if (closed) return;
@@ -321,11 +327,11 @@ export async function runBash(
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       stdout = appendBounded(stdout, chunk);
-      if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
+      if (observedOutputBytes > captureLimit) terminateWithEscalation();
     });
     child.stderr.on("data", (chunk) => {
       stderr = appendBounded(stderr, chunk);
-      if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
+      if (observedOutputBytes > captureLimit) terminateWithEscalation();
     });
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -341,16 +347,21 @@ export async function runBash(
       }
       const out = trimOutput(redactSensitiveText(stdout), config.maxOutputBytes);
       const err = trimOutput(redactSensitiveText(stderr), config.maxOutputBytes);
+      const outputLimited = observedOutputBytes > captureLimit;
+      const outputId = options.outputStore?.save(workspace.id, redactSensitiveText(stdout), redactSensitiveText(stderr), outputLimited || killedByTimeout);
       resolve({
         command,
         shell: invocation.shell,
         cwd: path.relative(workspace.root, cwd) || ".",
+        effective_cwd: cwd,
+        termination_reason: killedByTimeout ? "timeout" : outputLimited ? "output_limit" : "exit",
+        ...(outputId ? { output_resource_id: outputId } : {}),
         exitCode,
         signal,
         durationMs: Date.now() - start,
         stdout: out.value,
         stderr: err.value,
-        truncated: out.truncated || err.truncated,
+        truncated: outputLimited || out.truncated || err.truncated,
         ...(bashSessionId ? { bashSessionId } : {})
       });
     });

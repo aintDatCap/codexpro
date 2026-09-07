@@ -159,6 +159,8 @@ Prefer `Authorization: Bearer <token>` when the client supports headers. The `?c
 
 ## Safety defaults
 
+Tool results are bounded before reaching ChatGPT's subcall inspector, whether tool cards are enabled or disabled. Structured previews allow at most 200 items per array, 2,000 nodes, eight nesting levels, and a 64 KiB budget; text output has a 120,000-byte budget. Limited responses include `output_limited` and a retrieval hint. Use narrower paths, fewer results, or `read` line ranges to retrieve omitted data. These display limits do not change files or stop an operation that has already completed.
+
 - Public tunnels require a CodexPro HTTP token (min 24 bytes)
 - Writes stay hidden unless write mode is `workspace`
 - Safe bash is the default
@@ -235,6 +237,7 @@ npm run release:publish
 
 - [Website](https://rebel0789.github.io/codexpro/)
 - [FAQ](FAQ.md)
+- [Research workflow feedback, fixes, and output paging](docs/research-feedback.md)
 - [Security](SECURITY.md)
 - [Stable URL guide](DOMAIN_SETUP.md)
 - [Changelog](CHANGELOG.md)

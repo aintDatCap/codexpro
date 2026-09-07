@@ -62,7 +62,7 @@ export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
   private selectedWorkspaceId?: string;
 
-  constructor(private readonly config: CodexProConfig) {}
+  constructor(private readonly config: CodexProConfig, private readonly knownRoots = new Map<string, string>()) {}
 
   defaultWorkspace(): Workspace {
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === this.config.defaultRoot);
@@ -100,6 +100,7 @@ export class WorkspaceManager {
     }
 
     const id = workspaceIdForRoot(realRoot);
+    this.knownRoots.set(id, realRoot);
     const workspace = { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
     if (options.select !== false) this.selectedWorkspaceId = id;
@@ -116,8 +117,12 @@ export class WorkspaceManager {
     }
     const workspace = this.workspaces.get(id);
     if (!workspace) {
-      const configuredRoot = this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
-      if (configuredRoot) return this.openWorkspace(configuredRoot, { select: false });
+      const configuredRoot = this.knownRoots.get(id) ?? this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
+      if (configuredRoot) {
+        const recovered = this.openWorkspace(configuredRoot, { select: false });
+        if (recovered.id !== id) throw new CodexProError("Workspace root has changed. Open the intended root explicitly.");
+        return recovered;
+      }
     }
     if (!workspace) {
       throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);

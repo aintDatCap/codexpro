@@ -1562,6 +1562,8 @@ async function main(): Promise<void> {
   };
 
   const transports = new Map<string, TransportRecord>();
+  // Remember explicit workspace IDs across reconnects, but keep selection per session.
+  const knownWorkspaceRoots = new Map<string, string>();
   const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   function requestSessionId(req: Request): string | undefined {
@@ -1699,7 +1701,7 @@ async function main(): Promise<void> {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const server = createCodexProServer(config);
+        const server = createCodexProServer(config, knownWorkspaceRoots);
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);

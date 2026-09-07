@@ -11,6 +11,7 @@ import { viewWorkspaceImage } from "./imageOps.js";
 import { importAttachmentFile } from "./importOps.js";
 import { searchWorkspace } from "./searchOps.js";
 import { runBash } from "./bashOps.js";
+import { OutputStore } from "./outputStore.js";
 import { gitDiff, gitDiffStatus, gitLog, gitStatus } from "./gitOps.js";
 import { readAiBridgeContext, readCodexContext, workspaceSummary } from "./workspaceOps.js";
 import { buildProContext, exportProContext } from "./proContext.js";
@@ -31,20 +32,57 @@ function errorText(error: unknown): string {
   return redactSensitiveText(String(error));
 }
 
-function compactStructuredContent<T>(value: T, depth = 0): T {
-  if (depth > 8 || value === null || value === undefined) return value;
-  if (typeof value === "string") {
-    if (value.length <= STRUCTURED_STRING_MAX_CHARS) return value as T;
-    return `${value.slice(0, STRUCTURED_STRING_MAX_CHARS)}\n...[structured field truncated to ${STRUCTURED_STRING_MAX_CHARS} chars]` as T;
+function compactStructuredContent(value: Record<string, unknown>): { value: Record<string, unknown>; limited: boolean } {
+  // The host's subcall inspector renders structuredContent even when tool cards
+  // are disabled. Bound the whole tree, not just individual string fields.
+  let bytes = 64 * 1024;
+  let nodes = 2000;
+  let limited = false;
+  const seen = new Set<object>();
+  const omitted = () => { limited = true; return undefined; };
+  function visit(item: unknown, depth: number): unknown {
+    if (depth > 8 || nodes-- <= 0 || bytes < 8) return omitted();
+    if (item === undefined) return undefined;
+    if (typeof item === "string") {
+      let text = item.slice(0, STRUCTURED_STRING_MAX_CHARS);
+      // JSON escaping and UTF-8 can expand strings; account for wire bytes.
+      while (Buffer.byteLength(JSON.stringify(text), "utf8") > bytes && text.length) text = text.slice(0, Math.floor(text.length / 2));
+      bytes -= Buffer.byteLength(JSON.stringify(text), "utf8");
+      if (text.length !== item.length) limited = true;
+      return text;
+    }
+    if (item === null || typeof item !== "object") {
+      bytes -= 24;
+      return item;
+    }
+    if (seen.has(item)) return omitted();
+    seen.add(item);
+    bytes -= 2;
+    if (Array.isArray(item)) {
+      const out: unknown[] = [];
+      for (let i = 0; i < item.length; i += 1) {
+        if (i >= 200 || nodes <= 0 || bytes < 8) { limited = true; break; }
+        const child = visit(item[i], depth + 1);
+        if (child === undefined) { limited = true; break; }
+        out.push(child);
+        bytes -= 1;
+      }
+      seen.delete(item);
+      return out;
+    }
+    const out: Record<string, unknown> = Object.create(null);
+    for (const key in item) {
+      if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
+      const keyBytes = Buffer.byteLength(JSON.stringify(key), "utf8") + 2;
+      if (nodes <= 0 || keyBytes + 8 > bytes) { limited = true; break; }
+      bytes -= keyBytes;
+      const child = visit((item as Record<string, unknown>)[key], depth + 1);
+      if (child !== undefined) out[key] = child;
+    }
+    seen.delete(item);
+    return out;
   }
-  if (Array.isArray(value)) return value.map((item) => compactStructuredContent(item, depth + 1)) as T;
-  if (typeof value !== "object") return value;
-
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    out[key] = compactStructuredContent(item, depth + 1);
-  }
-  return out as T;
+  return { value: visit(value, 0) as Record<string, unknown>, limited };
 }
 
 function textResult(text: string, structuredContent: Record<string, unknown> = {}, meta: Record<string, unknown> = {}): any {
@@ -119,8 +157,26 @@ function tagToolResult(result: any, name: string, options: Record<string, unknow
     codexpro_title: options.title ?? name,
     ...base
   };
-  const meta = (options._meta as Record<string, unknown> | undefined) ?? {};
-  result.structuredContent = meta.ui || meta["openai/outputTemplate"] ? compactStructuredContent(tagged) : tagged;
+  const compact = compactStructuredContent(tagged);
+  result.structuredContent = compact.value;
+  let textBytes = 120_000;
+  let textLimited = false;
+  result.content = (result.content ?? []).map((block: any) => {
+    if (block.type !== "text" || typeof block.text !== "string") return block;
+    const encoded = Buffer.from(block.text, "utf8");
+    if (encoded.length <= textBytes) { textBytes -= encoded.length; return block; }
+    textLimited = true;
+    const text = encoded.subarray(0, textBytes).toString("utf8").replace(/\uFFFD$/, "");
+    textBytes = 0;
+    return { ...block, text };
+  });
+  if (compact.limited || textLimited) {
+    const note = "Tool output was limited for the subcall inspector. Request a narrower path, line range, or fewer results to retrieve omitted data.";
+    result.structuredContent.output_limited = true;
+    result.structuredContent.output_limit_note = note;
+    if (textLimited) result.structuredContent.text_output_limited = true;
+    result.content = [...(result.content ?? []), { type: "text", text: note }];
+  }
   return result;
 }
 
@@ -320,6 +376,8 @@ function registerToolCompat(
 }
 
 const MINIMAL_TOOL_NAMES = [
+  "reconnect_workspace",
+  "read_output",
   SUPERTOOL_NAME,
   "server_config",
   "codexpro_self_test",
@@ -349,6 +407,8 @@ const STANDARD_TOOL_NAMES = [
 ] as const;
 
 const FULL_TOOL_NAMES = [
+  "reconnect_workspace",
+  "read_output",
   SUPERTOOL_NAME,
   "server_config",
   "codexpro_self_test",
@@ -519,7 +579,7 @@ function serverInstructions(config: CodexProConfig): string {
     "",
     "Preferred workflow:",
     "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; that selection stays active for this MCP session.",
-    "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
+    "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files. Keep its workspace_id on subsequent calls. After MCP reconnect use reconnect_workspace with that ID (and the original root after a server restart).",
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
@@ -956,8 +1016,9 @@ const LOCAL_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, des
 const BASH_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: true, idempotentHint: false };
 const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 
-export function createCodexProServer(config: CodexProConfig): McpServer {
-  const workspaces = new WorkspaceManager(config);
+export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots = new Map<string, string>()): McpServer {
+  const workspaces = new WorkspaceManager(config, knownWorkspaceRoots);
+  const outputs = new OutputStore();
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
   const gitService = new GitService(config, guard);
@@ -969,6 +1030,35 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
+
+  registerCodexTool(config, server, "reconnect_workspace", {
+    title: "Reconnect Workspace",
+    description: "Validate and select a previously opened workspace by ID after MCP reconnect. Supply its original root after a server restart. Does not repair the host connector or retry commands.",
+    inputSchema: { workspace_id: z.string(), root: z.string().optional() },
+    annotations: SESSION_READ_ANNOTATIONS
+  }, async (args) => {
+    const workspace = args.root ? workspaces.openWorkspace(args.root, { select: false }) : workspaces.getWorkspace(args.workspace_id);
+    if (workspace.id !== args.workspace_id) throw new CodexProError("Workspace ID does not match the supplied root.");
+    workspaces.openWorkspace(workspace.root);
+    return textResult(`Workspace reconnected: ${workspace.id}\nRoot: ${workspace.root}`, {
+      workspace_id: workspace.id, root: workspace.root, connected: true, workspace_available: true,
+      selected_workspace_id: workspace.id, actions: registeredToolNames(server)
+    });
+  });
+
+  registerCodexTool(config, server, "read_output", {
+    title: "Read Command Output",
+    description: "Read retained, redacted shell output by character offset. Follow next_offset until null. Last four shell outputs are retained in this MCP session, up to 2 MB each; incomplete means execution hit a capture limit or timeout.",
+    inputSchema: {
+      workspace_id: z.string().optional(), output_resource_id: z.string(),
+      stream: z.enum(["stdout", "stderr"]).optional(),
+      offset: z.number().int().min(0).optional(), max_chars: z.number().int().min(2).max(8000).optional()
+    }, annotations: READ_ONLY_ANNOTATIONS
+  }, async (args) => {
+    const workspace = workspaces.getWorkspace(args.workspace_id);
+    const result = outputs.read(workspace.id, args.output_resource_id, args.stream ?? "stdout", args.offset, args.max_chars);
+    return textResult(result.text, { workspace_id: workspace.id, ...result });
+  });
 
   registerCodexTool(
     config,
@@ -1754,6 +1844,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         query: z.string().describe("Text or regex to search for."),
         regex: z.boolean().optional().describe("Treat query as a regular expression. Requires ripgrep. Default: false."),
+        case_sensitive: z.boolean().optional().describe("Case-sensitive lexical search. Default: true."),
+        context_before: z.number().int().min(0).max(30).optional().describe("Lines before each of the first 20 lexical matches."),
+        context_after: z.number().int().min(0).max(30).optional().describe("Lines after each of the first 20 lexical matches."),
         path: z.string().optional().describe("Directory or file relative to workspace root. Default: ."),
         glob: z.string().optional().describe("Optional glob, for example src/**/*.ts."),
         include_hidden: z.boolean().optional().describe("Include hidden files that are not blocked. Default: false."),
@@ -1774,6 +1867,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const result = await searchWorkspace(config, guard, workspace, {
         query: args.query,
         regex: parseBool(args.regex, false),
+        caseSensitive: args.case_sensitive,
+        contextBefore: args.context_before,
+        contextAfter: args.context_after,
         root: args.path ?? ".",
         glob: args.glob,
         includeHidden: parseBool(args.include_hidden, false),
@@ -2112,9 +2208,10 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         cwd: args.cwd,
         shell: args.shell,
         timeoutMs: args.timeout_ms,
-        sessionId: args.session_id
+        sessionId: args.session_id,
+        outputStore: outputs
       });
-      const text = bashTextResult(config, result);
+      const text = `Effective CWD: ${result.effective_cwd}\nTermination: ${result.termination_reason}\nOutput: ${result.output_resource_id} (use read_output to page stdout/stderr)\n\n${bashTextResult(config, result)}`;
       return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null });
     }
   );
