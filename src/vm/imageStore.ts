@@ -10,7 +10,7 @@ import {
   type VmImageManifest,
   type VmImageValidation
 } from "./types.js";
-import { ensureVmHome, vmHomeLayout, type VmHomeLayout } from "./vmHome.js";
+import { ensureVmLayout, vmHomeLayout, type VmHomeLayout } from "./vmHome.js";
 import {
   checkQcow2,
   convertImageToQcow2,
@@ -31,6 +31,7 @@ export interface ImportImageOptions {
 
 export interface ImageStoreOptions {
   home?: string;
+  vmRoot?: string;
   executor?: CommandExecutor;
 }
 
@@ -73,7 +74,7 @@ export class ImageStore {
   private readonly executor: CommandExecutor;
 
   constructor(options: ImageStoreOptions = {}) {
-    this.layout = vmHomeLayout(options.home);
+    this.layout = vmHomeLayout(options.home, options.vmRoot);
     this.executor = options.executor ?? nodeCommandExecutor;
   }
 
@@ -92,7 +93,7 @@ export class ImageStore {
   async importImage(options: ImportImageOptions): Promise<VmImageManifest> {
     const name = validateImageName(options.name);
     validateResources(options.defaultCpus, options.defaultMemoryMb);
-    const layout = await ensureVmHome(path.dirname(this.layout.root));
+    const layout = await ensureVmLayout(this.layout);
     const finalDir = path.join(layout.images, name);
     if (await exists(finalDir)) {
       throw new Error(`VM image "${name}" is already installed. Choose a different name.`);
@@ -210,7 +211,7 @@ export class ImageStore {
   }
 
   async listImages(): Promise<VmImageManifest[]> {
-    await ensureVmHome(path.dirname(this.layout.root));
+    await ensureVmLayout(this.layout);
     const entries = await fsp.readdir(this.layout.images, { withFileTypes: true });
     const images: VmImageManifest[] = [];
     for (const entry of entries) {

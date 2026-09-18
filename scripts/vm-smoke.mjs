@@ -10,6 +10,7 @@ import {
   VmManager,
   acceleratorForPlatform,
   buildQemuLaunchArgs,
+  configuredVmRoot,
   discoverExecutable,
   hostArchitecture,
   normalizeArchitecture,
@@ -18,6 +19,7 @@ import {
   qgaArguments,
   qmpArgument,
   runVmToolAction,
+  saveConfiguredVmRoot,
   systemBinaryName,
   validateImageName,
   validateInstanceId,
@@ -73,6 +75,26 @@ try {
   assert.equal(layout.root, path.join(home, 'vm'));
   assert.equal(layout.images, path.join(home, 'vm', 'images'));
   assert.equal(layout.instances, path.join(home, 'vm', 'instances'));
+  const customVmRoot = path.join(root, 'custom-vm-root');
+  const customLayout = vmHomeLayout(home, customVmRoot);
+  assert.equal(customLayout.root, customVmRoot);
+  assert.equal(customLayout.images, path.join(customVmRoot, 'images'));
+  assert.equal(customLayout.instances, path.join(customVmRoot, 'instances'));
+
+  const previousVmHome = process.env.CODEXPRO_VM_HOME;
+  delete process.env.CODEXPRO_VM_HOME;
+  try {
+    const persistedHome = path.join(root, 'persisted-home');
+    const persistedVmRoot = path.join(root, 'persisted-vm-root');
+    await saveConfiguredVmRoot(persistedVmRoot, persistedHome);
+    assert.equal(configuredVmRoot(persistedHome), persistedVmRoot);
+    assert.deepEqual(await new VmManager({ home: persistedHome }).listImages(), []);
+    assert.ok((await fs.stat(path.join(persistedVmRoot, 'images'))).isDirectory());
+    assert.ok((await fs.stat(path.join(persistedVmRoot, 'instances'))).isDirectory());
+  } finally {
+    if (previousVmHome === undefined) delete process.env.CODEXPRO_VM_HOME;
+    else process.env.CODEXPRO_VM_HOME = previousVmHome;
+  }
 
   const sourceImage = path.join(root, 'source.qcow2');
   const backedSource = path.join(root, 'source-with-backing.qcow2');
@@ -224,7 +246,19 @@ try {
   const help = spawnSync(process.execPath, [cli, 'vm', '--help'], { cwd: path.resolve('.'), env, encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /codexpro vm setup/);
+  assert.match(help.stdout, /--vm-home <dir>/);
   assert.match(help.stdout, /never downloads or installs QEMU automatically/);
+
+  const doctorVmHome = path.join(root, 'cli-custom-vm-home');
+  const doctor = spawnSync(
+    process.execPath,
+    [cli, 'vm', 'doctor', '--vm-home', doctorVmHome],
+    { cwd: path.resolve('.'), env, encoding: 'utf8' }
+  );
+  assert.equal(doctor.status, 0, doctor.stderr);
+  assert.ok(doctor.stdout.includes(`VM home               ${doctorVmHome}`));
+  assert.ok((await fs.stat(path.join(doctorVmHome, 'images'))).isDirectory());
+  assert.ok((await fs.stat(path.join(doctorVmHome, 'instances'))).isDirectory());
 
   const missingImage = spawnSync(
     process.execPath,

@@ -11,7 +11,7 @@ import {
   type VmInstanceRecord,
   type VmInstanceState
 } from "./types.js";
-import { ensureVmHome, vmHomeLayout, type VmHomeLayout } from "./vmHome.js";
+import { ensureVmLayout, vmHomeLayout, type VmHomeLayout } from "./vmHome.js";
 
 export interface InstanceAllocation {
   record: VmInstanceRecord;
@@ -24,6 +24,7 @@ export interface InstanceAllocation {
 
 export interface InstanceStoreOptions {
   home?: string;
+  vmRoot?: string;
 }
 
 async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
@@ -55,7 +56,7 @@ export class InstanceStore {
   private readonly layout: VmHomeLayout;
 
   constructor(options: InstanceStoreOptions = {}) {
-    this.layout = vmHomeLayout(options.home);
+    this.layout = vmHomeLayout(options.home, options.vmRoot);
   }
 
   instanceDir(id: string): string {
@@ -97,7 +98,7 @@ export class InstanceStore {
   ): Promise<InstanceAllocation> {
     validateImageName(image);
     validateResources(cpus, memoryMb);
-    await ensureVmHome(path.dirname(this.layout.root));
+    await ensureVmLayout(this.layout);
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const id = `vm-${randomBytes(8).toString("hex")}`;
@@ -224,7 +225,7 @@ export class InstanceStore {
   }
 
   async list(): Promise<VmInstanceRecord[]> {
-    await ensureVmHome(path.dirname(this.layout.root));
+    await ensureVmLayout(this.layout);
     const entries = await fsp.readdir(this.layout.instances, { withFileTypes: true });
     const records: VmInstanceRecord[] = [];
     for (const entry of entries) {

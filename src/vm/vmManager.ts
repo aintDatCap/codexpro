@@ -29,10 +29,11 @@ import {
   type VmImageManifest,
   type VmInstanceRecord
 } from "./types.js";
-import { ensureVmHome, vmHomeLayout } from "./vmHome.js";
+import { configuredVmRoot, ensureVmHome, vmHomeLayout } from "./vmHome.js";
 
 export interface VmManagerOptions {
   home?: string;
+  vmRoot?: string;
   executor?: CommandExecutor;
   qemu?: string;
   qemuImg?: string;
@@ -139,9 +140,14 @@ export function publicVmInstance(record: VmInstanceRecord): PublicVmInstance {
   };
 }
 
-export function redactVmHostPaths(error: unknown, home = codexProHome()): string {
+export function redactVmHostPaths(
+  error: unknown,
+  home = codexProHome(),
+  vmRoot = process.env.CODEXPRO_VM_HOME
+): string {
   const message = error instanceof Error ? error.message : String(error);
-  const variants = [path.resolve(home), path.resolve(home).replace(/\\/g, "/")].filter(Boolean);
+  const roots = [home, vmRoot].filter((value): value is string => Boolean(value)).map((value) => path.resolve(value));
+  const variants = [...new Set(roots.flatMap((value) => [value, value.replace(/\\/g, "/")]))];
   let redacted = message;
   for (const value of variants) {
     redacted = redacted.split(value).join("<CODEXPRO_HOME>");
@@ -151,6 +157,7 @@ export function redactVmHostPaths(error: unknown, home = codexProHome()): string
 
 export class VmManager {
   private readonly home: string;
+  private readonly vmRoot: string;
   private readonly executor: CommandExecutor;
   private readonly qemuOverride?: string;
   private readonly qemuImgOverride?: string;
@@ -160,11 +167,13 @@ export class VmManager {
 
   constructor(options: VmManagerOptions = {}) {
     this.home = path.resolve(options.home ?? codexProHome());
+    const selectedVmRoot = options.vmRoot ? path.resolve(options.vmRoot) : configuredVmRoot(this.home);
+    this.vmRoot = selectedVmRoot ?? vmHomeLayout(this.home).root;
     this.executor = options.executor ?? nodeCommandExecutor;
     this.qemuOverride = options.qemu ?? process.env.CODEXPRO_QEMU;
     this.qemuImgOverride = options.qemuImg ?? process.env.CODEXPRO_QEMU_IMG;
-    this.images = new ImageStore({ home: this.home, executor: this.executor });
-    this.instances = new InstanceStore({ home: this.home });
+    this.images = new ImageStore({ home: this.home, vmRoot: this.vmRoot, executor: this.executor });
+    this.instances = new InstanceStore({ home: this.home, vmRoot: this.vmRoot });
   }
 
   private resolveQemuImg(): string | undefined {
@@ -217,7 +226,7 @@ export class VmManager {
   }
 
   async doctor(architecture: VmArchitecture = hostArchitecture()): Promise<VmDoctorReport> {
-    const layout = await ensureVmHome(this.home);
+    const layout = await ensureVmHome(this.home, this.vmRoot);
     const qemuSystem = this.resolveQemuSystem(architecture);
     const qemuImg = this.resolveQemuImg();
     let qemuSystemVersion: string | undefined;
@@ -276,7 +285,7 @@ export class VmManager {
           'VM image "' +
             name +
             '" was imported successfully, but its validation boot failed: ' +
-            redactVmHostPaths(error, this.home)
+            redactVmHostPaths(error, this.home, this.vmRoot)
         );
       }
     }

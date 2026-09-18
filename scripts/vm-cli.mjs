@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 const BOOLEAN_OPTIONS = new Set(['desktop', 'no-desktop', 'validate', 'no-validate', 'headless', 'help']);
-const VALUE_OPTIONS = new Set(['name', 'image', 'architecture', 'arch', 'cpus', 'memory', 'qemu', 'qemu-img']);
+const VALUE_OPTIONS = new Set(['name', 'image', 'architecture', 'arch', 'cpus', 'memory', 'vm-home', 'qemu', 'qemu-img']);
 
 function parseVmArgs(argv) {
   const out = { positional: [] };
@@ -85,7 +85,7 @@ async function ask(rl, question, fallback = '') {
 async function askBoolean(rl, question, fallback) {
   for (;;) {
     try {
-      return yesNo(await ask(rl, question, fallback ? 'yes' : 'no'), fallback);
+      return yesNo(await ask(rl, `${question} (yes/no)`, fallback ? 'yes' : 'no'), fallback);
     } catch (error) {
       console.log(error instanceof Error ? error.message : String(error));
     }
@@ -123,17 +123,18 @@ Setup options:
   --architecture <arch>      x86_64 or aarch64. Default: host architecture.
   --cpus <n>                 Default virtual CPUs.
   --memory <MiB>             Default memory in MiB.
+  --vm-home <dir>            VM storage root. Setup remembers the selected location.
   --desktop                  Mark the image as providing a desktop environment.
   --validate                 Perform a bounded validation boot and QEMU Guest Agent probe.
   --headless                 Never prompt; required values must be supplied.
   --qemu <path>              Override qemu-system executable.
   --qemu-img <path>          Override qemu-img executable.
-                              CODEXPRO_QEMU and CODEXPRO_QEMU_IMG are also supported.
+                              CODEXPRO_VM_HOME, CODEXPRO_QEMU, and CODEXPRO_QEMU_IMG are also supported.
 
 CodexPro never downloads or installs QEMU automatically.`);
 }
 
-async function setupCommand(runtime, manager, args) {
+async function setupCommand(runtime, args) {
   const hostArch = runtime.hostArchitecture();
   const defaultCpus = defaultCpuCount();
   const defaultMemory = 4096;
@@ -142,6 +143,7 @@ async function setupCommand(runtime, manager, args) {
   let architecture = args.architecture ?? args.arch ?? hostArch;
   let cpus = args.cpus;
   let memory = args.memory;
+  let vmHome = args.vmHome ?? runtime.configuredVmRoot() ?? runtime.vmHomeLayout().root;
   let desktop = args.desktop ?? false;
   let validate = args.validate ?? false;
 
@@ -153,7 +155,7 @@ async function setupCommand(runtime, manager, args) {
 
   if (needsRequired) {
     console.log('CodexPro VM setup');
-    console.log('This wizard imports a private immutable qcow2 base image under CODEXPRO_HOME.');
+    console.log('This wizard imports a private immutable qcow2 base image into the VM storage directory.');
     console.log('Press Enter to accept defaults. QEMU must already be installed.\n');
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
@@ -162,6 +164,7 @@ async function setupCommand(runtime, manager, args) {
       architecture = await ask(rl, 'Guest architecture', architecture);
       cpus = await ask(rl, 'Default CPU count', cpus ?? defaultCpus);
       memory = await ask(rl, 'Default memory (MiB)', memory ?? defaultMemory);
+      vmHome = await ask(rl, 'VM storage location', vmHome);
       desktop = await askBoolean(rl, 'Does this image provide a desktop environment?', desktop);
       validate = await askBoolean(rl, 'Perform a validation boot now?', validate);
     } finally {
@@ -172,6 +175,14 @@ async function setupCommand(runtime, manager, args) {
   if (!name) throw new Error('--name is required.');
   if (!image) throw new Error('--image is required.');
 
+  const resolvedVmHome = path.resolve(expandUserPath(vmHome));
+  const manager = new runtime.VmManager({
+    vmRoot: resolvedVmHome,
+    qemu: args.qemu,
+    qemuImg: args.qemuImg
+  });
+
+  await runtime.saveConfiguredVmRoot(resolvedVmHome);
   const manifest = await manager.setupImage({
     name,
     sourcePath: path.resolve(expandUserPath(image)),
@@ -183,6 +194,7 @@ async function setupCommand(runtime, manager, args) {
   });
 
   console.log(`VM image installed: ${manifest.name}`);
+  console.log(`VM storage            ${resolvedVmHome}`);
   console.log(`Architecture          ${manifest.architecture}`);
   console.log(`Virtual size          ${humanBytes(manifest.virtualSize)}`);
   console.log(`Default resources     ${manifest.defaultCpus} CPU / ${manifest.defaultMemoryMb} MiB`);
@@ -256,15 +268,16 @@ export async function runVmCli(argv, projectRoot) {
   }
 
   const runtime = await loadVmRuntime(projectRoot);
+  if (command === 'setup') {
+    await setupCommand(runtime, args);
+    return;
+  }
+
   const manager = new runtime.VmManager({
+    vmRoot: args.vmHome ? path.resolve(expandUserPath(args.vmHome)) : undefined,
     qemu: args.qemu,
     qemuImg: args.qemuImg
   });
-
-  if (command === 'setup') {
-    await setupCommand(runtime, manager, args);
-    return;
-  }
   if (command === 'doctor') {
     await doctorCommand(runtime, manager, args);
     return;

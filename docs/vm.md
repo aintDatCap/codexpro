@@ -34,7 +34,7 @@ Run the interactive wizard:
 codexpro vm setup
 ```
 
-It asks for an image name, source image path, architecture, default CPU count, default memory, desktop metadata, and whether to perform a validation boot.
+It asks for an image name, source image path, architecture, default CPU count, default memory, VM storage location, desktop metadata, and whether to perform a validation boot. Boolean questions display their choices explicitly as `yes/no`.
 
 For CI or other non-interactive use, provide required values explicitly:
 
@@ -45,15 +45,16 @@ codexpro vm setup \
   --image ./ubuntu.qcow2 \
   --cpus 4 \
   --memory 8192 \
+  --vm-home /srv/codexpro-vms \
   --desktop \
   --validate
 ```
 
-`--headless` never prompts. Missing `--name` or `--image` is an error.
+`--headless` never prompts. Missing `--name` or `--image` is an error. Setup remembers the selected VM storage root for later VM commands. Use `--vm-home <dir>` for a per-command override, or set `CODEXPRO_VM_HOME` for an environment override, without moving the rest of `CODEXPRO_HOME`.
 
 The supplied source image is never registered or booted directly. CodexPro inspects it with `qemu-img`, converts it into a self-contained qcow2 file, checks it, hashes it with SHA-256, and atomically moves it into CodexPro's private image store. The original file is not modified. Source images with external backing files are rejected so image metadata cannot make CodexPro follow arbitrary host paths; flatten such chains yourself before import.
 
-Managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/vm`), not in the project repository:
+By default, managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/vm`), not in the project repository. A custom `--vm-home` or `CODEXPRO_VM_HOME` points directly at the VM storage root:
 
 ```text
 ~/.codexpro/
