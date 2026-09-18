@@ -89,6 +89,18 @@ export function qemuMachineForArchitecture(architecture: VmArchitecture): string
   return architecture === "aarch64" ? "virt" : "q35";
 }
 
+export function qemuMachineForLaunch(
+  architecture: VmArchitecture,
+  accelerator: VmAccelerator,
+  cpus: number
+): string {
+  const machine = qemuMachineForArchitecture(architecture);
+  if (architecture === "x86_64" && accelerator === "whpx" && cpus > 1) {
+    return `${machine},kernel-irqchip=off`;
+  }
+  return machine;
+}
+
 export async function binaryVersion(executor: CommandExecutor, binary: string): Promise<string> {
   const result = await executor.run(binary, ["--version"], { timeoutMs: 5_000 });
   if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `${binary} --version failed.`);
@@ -209,10 +221,10 @@ export function buildQemuLaunchArgs(options: QemuLaunchOptions): string[] {
     "-name",
     `codexpro-${options.id}`,
     "-machine",
-    qemuMachineForArchitecture(options.architecture),
+    qemuMachineForLaunch(options.architecture, options.accelerator, options.cpus),
     "-accel",
     options.accelerator,
-    ...(options.architecture === "aarch64" ? ["-cpu", "host"] : []),
+    ...(options.architecture === "aarch64" && options.accelerator !== "tcg" ? ["-cpu", "host"] : []),
     "-smp",
     String(options.cpus),
     "-m",
@@ -268,9 +280,9 @@ export function buildQemuInstallerArgs(options: QemuInstallerOptions): string[] 
       ];
   return [
     "-name", `codexpro-install-${options.name}`,
-    "-machine", qemuMachineForArchitecture(options.architecture),
+    "-machine", qemuMachineForLaunch(options.architecture, options.accelerator, options.cpus),
     "-accel", options.accelerator,
-    ...(options.architecture === "aarch64" ? ["-cpu", "host"] : []),
+    ...(options.architecture === "aarch64" && options.accelerator !== "tcg" ? ["-cpu", "host"] : []),
     "-smp", String(options.cpus),
     "-m", String(options.memoryMb),
     ...storageArgs,
@@ -333,6 +345,10 @@ export async function runQemuInstaller(
 
       try {
         const status = await qmp.queryStatus(1_500);
+        const logTail = await readLogTail(logPath, 8_192);
+        if (/WHPX:\s+Unexpected VP exit code 4/i.test(logTail)) {
+          throw new Error("QEMU installer hit a WHPX virtual-processor failure (Unexpected VP exit code 4).");
+        }
         if (INSTALLER_FATAL_STATES.has(status.status)) {
           throw new Error(`QEMU installer entered non-resumable state: ${status.status}.`);
         }

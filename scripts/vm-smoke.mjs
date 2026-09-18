@@ -69,6 +69,10 @@ try {
     validation: { bootTested: false, guestAgentAvailable: false }
   });
   assert.equal(manifest.source.originalFileName, 'ubuntu.qcow2');
+  assert.equal(manifest.preferredAccelerator, undefined);
+  const tcgManifest = parseImageManifest({ ...manifest, preferredAccelerator: 'tcg' });
+  assert.equal(tcgManifest.preferredAccelerator, 'tcg');
+  assert.throws(() => parseImageManifest({ ...manifest, preferredAccelerator: 'invalid' }), /preferred accelerator/);
   assert.throws(
     () => parseImageManifest({ ...manifest, source: { originalFileName: '../ubuntu.qcow2' } }),
     /must not contain a path/
@@ -164,9 +168,11 @@ try {
     defaultCpus: 2,
     defaultMemoryMb: 2048,
     desktop: false,
+    preferredAccelerator: 'tcg',
     qemuImg: 'qemu-img'
   });
   assert.equal(imported.format, 'qcow2');
+  assert.equal(imported.preferredAccelerator, 'tcg');
   assert.equal(imported.source.originalFileName, path.basename(sourceImage));
   assert.equal(imported.validation.bootTested, false);
   assert.equal(await fs.readFile(sourceImage, 'utf8'), 'source image bytes');
@@ -221,6 +227,18 @@ try {
   assert.ok(launchArgs.includes('user,model=e1000e'));
   assert.ok(launchArgs.includes('-pidfile'));
   assert.ok(launchArgs.includes('/managed/instances/vm-0123456789abcdef/qemu.pid'));
+  const whpxLaunchArgs = buildQemuLaunchArgs({
+    id: 'vm-1111111111111111',
+    architecture: 'x86_64',
+    accelerator: 'whpx',
+    cpus: 4,
+    memoryMb: 4096,
+    overlayPath: 'E:/codexprovm/instances/vm-1111111111111111/overlay.qcow2',
+    pidFilePath: 'E:/codexprovm/instances/vm-1111111111111111/qemu.pid',
+    qmp: { transport: 'pipe', name: 'codexpro-vm-1111111111111111-qmp' },
+    qga: { transport: 'tcp', host: '127.0.0.1', port: 45999 }
+  });
+  assert.equal(whpxLaunchArgs[whpxLaunchArgs.indexOf('-machine') + 1], 'q35,kernel-irqchip=off');
   const armLaunchArgs = buildQemuLaunchArgs({
     id: 'vm-fedcba9876543210',
     architecture: 'aarch64',
@@ -246,6 +264,7 @@ try {
     qmp: { transport: 'pipe', name: 'codexpro-vm-0123456789abcdef-qmp' },
     display: 'sdl'
   });
+  assert.equal(installerArgs[installerArgs.indexOf('-machine') + 1], 'q35,kernel-irqchip=off');
   assert.ok(installerArgs.join(' ').includes('ich9-ahci,id=codexpro-ahci'));
   assert.ok(installerArgs.join(' ').includes('ide-hd,drive=install-disk,bus=codexpro-ahci.0'));
   assert.ok(installerArgs.join(' ').includes('ide-cd,drive=install-cd,bus=codexpro-ahci.1'));
@@ -262,6 +281,7 @@ import net from 'node:net';
 const endpoint = JSON.parse(process.argv[2]);
 const mode = process.argv[3];
 const address = endpoint.transport === 'pipe' ? '\\\\.\\pipe\\' + endpoint.name : endpoint.path;
+if (mode === 'whpx') console.error('qemu-system-x86_64.EXE: WHPX: Unexpected VP exit code 4');
 let running = false;
 const server = net.createServer((socket) => {
   socket.setEncoding('utf8');
@@ -322,6 +342,19 @@ server.listen(address);
     /non-resumable state: io-error/
   );
 
+  const whpxFailureEndpoint = process.platform === 'win32'
+    ? { transport: 'pipe', name: 'codexpro-vm-3333333333333333-qmp' }
+    : { transport: 'unix', path: path.join(root, 'installer-whpx.sock') };
+  await assert.rejects(
+    () => runQemuInstaller(
+      process.execPath,
+      [fakeQmpServer, JSON.stringify(whpxFailureEndpoint), 'whpx'],
+      path.join(root, 'installer-whpx.log'),
+      whpxFailureEndpoint
+    ),
+    /WHPX virtual-processor failure/
+  );
+
   const pipeName = 'codexpro-vm-0123456789abcdef-qmp';
   assert.equal(qmpArgument({ transport: 'pipe', name: pipeName }), `pipe:${pipeName}`);
   assert.ok(qgaArguments({ transport: 'pipe', name: 'codexpro-vm-0123456789abcdef-qga' })[1].startsWith('pipe,'));
@@ -347,6 +380,9 @@ server.listen(address);
   const storedAllocation = await store.read(allocation.record.id);
   assert.equal(storedAllocation.image, 'ubuntu-dev');
   assert.deepEqual(storedAllocation.qga, { transport: 'tcp', host: '127.0.0.1', port: loopbackPort });
+  const tcgAllocation = await store.allocate('windows-dev', 4, 4096, 'tcg', true);
+  assert.equal((await store.read(tcgAllocation.record.id)).accelerator, 'tcg');
+  await store.remove(tcgAllocation.record.id);
   const recovering = await store.allocate('ubuntu-dev', 1, 512, 'kvm', false);
   await store.update(recovering.record.id, { state: 'starting' });
   await fs.writeFile(recovering.pidPath, String(process.pid));

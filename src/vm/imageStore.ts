@@ -6,6 +6,7 @@ import {
   parseImageManifest,
   validateImageName,
   validateResources,
+  type VmAccelerator,
   type VmArchitecture,
   type VmImageManifest,
   type VmImageValidation
@@ -27,6 +28,7 @@ export interface ImportImageOptions {
   defaultCpus: number;
   defaultMemoryMb: number;
   desktop: boolean;
+  preferredAccelerator?: VmAccelerator;
   qemuImg: string;
 }
 
@@ -155,6 +157,7 @@ export class ImageStore {
         defaultCpus: options.defaultCpus,
         defaultMemoryMb: options.defaultMemoryMb,
         desktop: options.desktop,
+        ...(options.preferredAccelerator ? { preferredAccelerator: options.preferredAccelerator } : {}),
         createdAt: new Date().toISOString(),
         source: {
           originalFileName: path.basename(options.sourceFileName ?? sourcePath)

@@ -36,7 +36,7 @@ export async function probeAccelerator(
         qemuMachineForArchitecture(architecture),
         "-accel",
         accelerator,
-        ...(architecture === "aarch64" ? ["-cpu", "host"] : []),
+        ...(architecture === "aarch64" && accelerator !== "tcg" ? ["-cpu", "host"] : []),
         "-nodefaults",
         "-display",
         "none",

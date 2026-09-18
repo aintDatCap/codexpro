@@ -1,5 +1,5 @@
 export type VmArchitecture = "x86_64" | "aarch64";
-export type VmAccelerator = "whpx" | "kvm" | "hvf";
+export type VmAccelerator = "whpx" | "kvm" | "hvf" | "tcg";
 export type VmInstanceState = "created" | "starting" | "running" | "stopped" | "failed";
 
 export type LocalChannelEndpoint =
@@ -23,6 +23,7 @@ export interface VmImageManifest {
   defaultCpus: number;
   defaultMemoryMb: number;
   desktop: boolean;
+  preferredAccelerator?: VmAccelerator;
   createdAt: string;
   source: {
     originalFileName: string;
@@ -134,6 +135,13 @@ export function parseImageManifest(value: unknown): VmImageManifest {
   const defaultMemoryMb = requiredInteger(input.defaultMemoryMb, "manifest.defaultMemoryMb");
   validateResources(defaultCpus, defaultMemoryMb);
   const desktop = requiredBoolean(input.desktop, "manifest.desktop");
+  let preferredAccelerator: VmAccelerator | undefined;
+  if (input.preferredAccelerator !== undefined) {
+    preferredAccelerator = requiredString(input.preferredAccelerator, "manifest.preferredAccelerator") as VmAccelerator;
+    if (!["whpx", "kvm", "hvf", "tcg"].includes(preferredAccelerator)) {
+      throw new Error(`Invalid VM preferred accelerator: ${preferredAccelerator}`);
+    }
+  }
   const createdAt = requiredString(input.createdAt, "manifest.createdAt");
   if (!Number.isFinite(Date.parse(createdAt))) throw new Error("manifest.createdAt must be an ISO date.");
   const source = record(input.source, "manifest.source");
@@ -154,6 +162,7 @@ export function parseImageManifest(value: unknown): VmImageManifest {
     defaultCpus,
     defaultMemoryMb,
     desktop,
+    ...(preferredAccelerator ? { preferredAccelerator } : {}),
     createdAt,
     source: { originalFileName },
     validation: {
@@ -205,7 +214,7 @@ export function parseInstanceRecord(value: unknown): VmInstanceRecord {
   const memoryMb = requiredInteger(input.memoryMb, "instance.memoryMb");
   validateResources(cpus, memoryMb);
   const accelerator = requiredString(input.accelerator, "instance.accelerator") as VmAccelerator;
-  if (!["whpx", "kvm", "hvf"].includes(accelerator)) throw new Error(`Invalid VM accelerator: ${accelerator}`);
+  if (!["whpx", "kvm", "hvf", "tcg"].includes(accelerator)) throw new Error(`Invalid VM accelerator: ${accelerator}`);
   const desktop = requiredBoolean(input.desktop, "instance.desktop");
   const instanceDir = requiredString(input.instanceDir, "instance.instanceDir");
 

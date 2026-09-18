@@ -204,7 +204,8 @@ async function setupCommand(runtime, args) {
     desktop: Boolean(desktop),
     validate: Boolean(validate),
     diskSizeGb: positiveInteger(diskSize, '--disk-size', defaultDiskSize),
-    headless: Boolean(args.headless)
+    headless: Boolean(args.headless),
+    onProgress: (message) => console.log(`\n${message}\n`)
   });
 
   console.log(`VM image installed: ${manifest.name}`);
@@ -213,6 +214,7 @@ async function setupCommand(runtime, args) {
   console.log(`Virtual size          ${humanBytes(manifest.virtualSize)}`);
   console.log(`Default resources     ${manifest.defaultCpus} CPU / ${manifest.defaultMemoryMb} MiB`);
   console.log(`Desktop               ${manifest.desktop ? 'yes' : 'no'}`);
+  if (manifest.preferredAccelerator) console.log(`Preferred accelerator  ${manifest.preferredAccelerator}`);
   if (validate) {
     console.log(`Boot validation        ${manifest.validation.bootTested ? '✓' : '✗'}`);
     console.log(`QEMU Guest Agent       ${manifest.validation.guestAgentAvailable ? '✓' : '✗'}`);

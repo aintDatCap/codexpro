@@ -30,6 +30,7 @@ import {
   validateInstanceId,
   validateResources,
   type LocalChannelEndpoint,
+  type VmAccelerator,
   type VmArchitecture,
   type VmImageManifest,
   type VmInstanceRecord
@@ -54,6 +55,7 @@ export interface SetupVmImageOptions {
   validate?: boolean;
   diskSizeGb?: number;
   headless?: boolean;
+  onProgress?: (message: string) => void;
 }
 
 export interface CreateVmOptions {
@@ -334,16 +336,15 @@ export class VmManager {
     );
     await fsp.mkdir(stagingDir, { recursive: false, mode: 0o700 });
     const diskPath = path.join(stagingDir, "installed.qcow2");
-    const logPath = path.join(stagingDir, "installer.log");
-    const installerQmp: LocalChannelEndpoint = process.platform === "win32"
-      ? { transport: "pipe", name: `codexpro-vm-${randomBytes(8).toString("hex")}-qmp` }
-      : { transport: "unix", path: path.join(stagingDir, "qmp.sock") };
-    try {
-      await createQcow2Disk(this.executor, qemuImg, diskPath, diskSizeGb);
+    const makeInstallerQmp = (label: string): LocalChannelEndpoint => process.platform === "win32"
+      ? { transport: "pipe", name: `codexpro-vm-${randomBytes(8).toString("hex")}-${label}-qmp` }
+      : { transport: "unix", path: path.join(stagingDir, `${label}-qmp.sock`) };
+    const runInstallerAttempt = async (accelerator: VmAccelerator, logPath: string): Promise<void> => {
+      const installerQmp = makeInstallerQmp(accelerator);
       const args = buildQemuInstallerArgs({
         name,
         architecture,
-        accelerator: probe.accelerator,
+        accelerator,
         cpus: options.cpus,
         memoryMb: options.memoryMb,
         diskPath,
@@ -351,12 +352,48 @@ export class VmManager {
         qmp: installerQmp,
         display: process.platform === "win32" ? "sdl" : undefined
       });
+      await runQemuInstaller(qemuSystem, args, logPath, installerQmp);
+    };
+    try {
+      await createQcow2Disk(this.executor, qemuImg, diskPath, diskSizeGb);
+      let preferredAccelerator: VmAccelerator | undefined;
+      const primaryLogPath = path.join(stagingDir, "installer.log");
       try {
-        await runQemuInstaller(qemuSystem, args, logPath, installerQmp);
+        await runInstallerAttempt(probe.accelerator, primaryLogPath);
       } catch (error) {
-        const log = await readLogTail(logPath);
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new Error("QEMU installer failed: " + detail + (log ? "\nQEMU: " + log : ""));
+        const primaryLog = await readLogTail(primaryLogPath);
+        const whpxVpFailure = probe.accelerator === "whpx" && /WHPX:\s+Unexpected VP exit code 4/i.test(primaryLog);
+        if (!whpxVpFailure) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error("QEMU installer failed: " + detail + (primaryLog ? "\nQEMU: " + primaryLog : ""));
+        }
+
+        const tcgProbe = await probeAccelerator(qemuSystem, architecture, "tcg", 10_000);
+        if (!tcgProbe.usable || tcgProbe.accelerator !== "tcg") {
+          throw new Error(
+            "QEMU installer failed because WHPX hit Unexpected VP exit code 4, and the TCG compatibility fallback is unavailable: " +
+              (tcgProbe.reason ?? "TCG probe failed") +
+              (primaryLog ? "\nQEMU: " + primaryLog : "")
+          );
+        }
+
+        options.onProgress?.(
+          "WHPX failed with Unexpected VP exit code 4. Retrying the same installer disk with QEMU TCG software emulation; this will be slower."
+        );
+        const tcgLogPath = path.join(stagingDir, "installer-tcg.log");
+        try {
+          await runInstallerAttempt("tcg", tcgLogPath);
+        } catch (fallbackError) {
+          const tcgLog = await readLogTail(tcgLogPath);
+          const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          throw new Error(
+            "QEMU installer failed after falling back from WHPX to TCG: " +
+              detail +
+              (tcgLog ? "\nQEMU TCG: " + tcgLog : "") +
+              (primaryLog ? "\nEarlier WHPX: " + primaryLog : "")
+          );
+        }
+        preferredAccelerator = "tcg";
       }
       return await this.images.importImage({
         name,
@@ -366,6 +403,7 @@ export class VmManager {
         defaultCpus: options.cpus,
         defaultMemoryMb: options.memoryMb,
         desktop: Boolean(options.desktop),
+        preferredAccelerator,
         qemuImg
       });
     } finally {
@@ -432,12 +470,17 @@ export class VmManager {
 
     const qemuImg = this.requireQemuImg();
     const qemuSystem = this.requireQemuSystem(manifest.architecture);
-    const probe = await this.accelerator(manifest.architecture, qemuSystem);
+    const probe = manifest.preferredAccelerator
+      ? await probeAccelerator(qemuSystem, manifest.architecture, manifest.preferredAccelerator, 10_000)
+      : await this.accelerator(manifest.architecture, qemuSystem);
     if (!probe.accelerator || !probe.usable) {
+      const requirement = manifest.preferredAccelerator
+        ? `Required accelerator ${manifest.preferredAccelerator} is unavailable for this VM: `
+        : "Hardware acceleration is unavailable for this VM: ";
       throw new Error(
-        "Hardware acceleration is unavailable for this VM: " +
+        requirement +
           (probe.reason ?? "probe failed") +
-          ". CodexPro does not silently fall back to TCG software emulation."
+          (manifest.preferredAccelerator ? "" : ". CodexPro does not silently fall back to TCG software emulation.")
       );
     }
 
