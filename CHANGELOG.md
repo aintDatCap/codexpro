@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added an optional QEMU-only disposable VM runtime with interactive/headless image setup, immutable managed qcow2 bases, per-instance overlays, WHPX/KVM/HVF probing, typed QMP/QEMU Guest Agent channels, lifecycle CLI commands, and a bounded AI-facing `vm` tool for approved-image list/create/status/destroy actions.
+- Kept VM image import human-owned, QEMU externally installed, host tools under their existing safety model, and documented that VM isolation improves the testing boundary without making arbitrary code universally safe.
+
 ## 0.30.0 (2026-08-08)
 
 - Published the multi-project allowlist that was already on `main`: `codexpro settings set --project`, `--clear-projects`, session-local `open_workspace` selection, and matching FAQ guidance. npm `0.29.0` did not include those commits, which caused empty Allowed Roots reports after following current docs.

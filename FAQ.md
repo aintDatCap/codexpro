@@ -24,7 +24,7 @@ The main differences are:
 - Bash, write/edit, tool mode, Codex session reads, and handoff execution are separate safety controls.
 - Durable context is repo-backed through `AGENTS.md` and `.ai-bridge/*`, so important project memory stays reviewable in files.
 - The normal workflow emphasizes diffs, `show_changes`, smoke tests, and handoff status files.
-- CodexPro keeps a strict boundary: no model proxying, account pooling, third-party Pro site scraping, quota bypassing, or OS sandbox claims.
+- CodexPro keeps a strict boundary: no model proxying, account pooling, third-party Pro site scraping, or quota bypassing. Host tools remain a local developer bridge; optional QEMU runtimes provide separate disposable guest environments.
 
 CodexPro connects ChatGPT to a user-approved local repository over MCP. Repository access, command permissions, and change review remain explicit.
 
@@ -391,7 +391,9 @@ https://rebel0789.github.io/codexpro/
 
 ## Is CodexPro production safe?
 
-CodexPro is a local developer bridge, not an OS sandbox.
+CodexPro's host file and Bash tools are a local developer bridge, not an OS sandbox. Optional QEMU VM runtimes can provide disposable isolated guest environments for software testing, with immutable managed base images and per-instance overlays.
+
+VM isolation is an additional boundary, not a guarantee that arbitrary code is safe. Guest networking and the software inside an image still matter.
 
 Use it with repos you trust. Keep token auth enabled for public tunnels. Keep safe bash on unless you know why you need full bash. Read [SECURITY.md](SECURITY.md) before exposing it through a public tunnel.
 

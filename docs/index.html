@@ -92,7 +92,7 @@ codexpro setup</code>
             <div class="trust-row">
               <div><span>Not a model proxy</span><strong>uses your own ChatGPT account</strong></div>
               <div><span>Not a quota bypass</span><strong>product limits still apply</strong></div>
-              <div><span>Not an OS sandbox</span><strong>keep roots scoped to the repo</strong></div>
+              <div><span>Host tools are not an OS sandbox</span><strong>optional QEMU guests are separate</strong></div>
             </div>
           </div>
           <div class="floating-note">
@@ -196,7 +196,7 @@ codexpro setup</code>
             The transport can look similar: local MCP server, workspace root, and a tunnel. CodexPro is more opinionated. It is built for one job: make ChatGPT Plugins useful against explicitly allowed local projects without widening the trust boundary.
           </p>
           <p>
-            That means setup first, explicit safety modes, repo-backed context files, reviewable diffs, compact cards, and no model proxying, account pooling, quota bypassing, third-party Pro scraping, or OS sandbox claims.
+            That means setup first, explicit safety modes, repo-backed context files, reviewable diffs, compact cards, and no model proxying, account pooling, quota bypassing, or third-party Pro scraping. Host tools remain a local bridge; optional QEMU runtimes provide separate disposable guest isolation.
           </p>
         </div>
         <div class="value-matrix">
@@ -598,7 +598,7 @@ codexpro settings delete --yes</code></pre>
       <section class="section safety">
         <div>
           <p class="eyebrow">Safety boundary</p>
-          <h2>This is a local developer bridge, not an OS sandbox.</h2>
+          <h2>Host tools are a local developer bridge; optional QEMU guests add disposable isolation.</h2>
         </div>
         <ul>
           <li>Public tunnels are token-protected by default.</li>
@@ -607,6 +607,7 @@ codexpro settings delete --yes</code></pre>
           <li><code>--no-bash</code> disables all ChatGPT-triggered shell commands.</li>
           <li><code>--bash-session</code> with <code>--require-bash-session</code> requires explicit session targeting before bash runs.</li>
           <li>Use handoff mode when you want ChatGPT to plan and Codex to edit.</li>
+          <li>QEMU VM runtimes use immutable bases and disposable overlays, but do not make arbitrary code universally safe.</li>
         </ul>
       </section>
     </main>

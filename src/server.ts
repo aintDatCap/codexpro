@@ -24,6 +24,7 @@ import { GitService, WorktreeManager } from "./gitService.js";
 import { BrowserManager } from "./browserManager.js";
 import { DeepSeekBackend } from "./deepseekBackend.js";
 import { AgentManager } from "./agentManager.js";
+import { VmManager, runVmToolAction } from "./vm/index.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -406,7 +407,8 @@ const STANDARD_TOOL_NAMES = [
   "wait_for_handoff",
   "export_pro_context",
   "handoff_to_agent",
-  "git"
+  "git",
+  "vm"
 ] as const;
 
 const FULL_TOOL_NAMES = [
@@ -435,6 +437,7 @@ const FULL_TOOL_NAMES = [
   "git_diff",
   "git",
   "show_changes",
+  "vm",
   "browser",
   "subagent_spawn",
   "subagent_message",
@@ -459,6 +462,7 @@ const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   "bash",
   "git",
   "browser",
+  "vm",
   "subagent_spawn",
   "subagent_message",
   "subagent_cancel",
@@ -576,6 +580,10 @@ function serverInstructions(config: CodexProConfig): string {
     config.bashMode === "off"
       ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
       : "5. Bash is available for normal local development commands. In safe mode catastrophic filesystem/system/destructive-Git patterns are blocked; prefer structured Git/file tools where practical.";
+  const vmInstruction =
+    !config.connectionTest && config.toolMode !== "minimal"
+      ? "VM runtime: the vm tool may list human-approved images and create/status/destroy disposable QEMU instances. It cannot import images or execute guest commands in this release. Keep host and guest evidence separate, never assume host secrets exist in a guest, and do not claim guest execution unless a future guest-execution tool returns evidence."
+      : "";
 
   return [
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
@@ -587,6 +595,7 @@ function serverInstructions(config: CodexProConfig): string {
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
+    vmInstruction,
     "6. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
     config.codexSessions !== "off"
       ? `7. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
@@ -1074,6 +1083,7 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
   const gitService = new GitService(config, guard);
   const worktreeManager = new WorktreeManager(config);
   const browserManager = new BrowserManager(config, guard);
+  const vmManager = new VmManager();
   const agentManager = config.subagentsEnabled && config.deepseekApiKey
     ? new AgentManager(config, guard, new DeepSeekBackend(config.deepseekApiKey))
     : undefined;
@@ -1250,6 +1260,44 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         registeredToolCount: registeredToolNames(server).length
       };
       return textResult(`# CodexPro Server Config\n\n${JSON.stringify(safeConfig, null, 2)}`, safeConfig);
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "vm",
+    {
+      title: "Disposable VM",
+      description:
+        "Use human-approved QEMU images as disposable isolated test environments. Actions: images, create, status, destroy. This tool cannot import images, expose host paths, run arbitrary QMP, or execute guest commands.",
+      inputSchema: {
+        action: z.enum(["images", "create", "status", "destroy"]),
+        image: z.string().max(80).optional(),
+        id: z.string().max(40).optional(),
+        cpus: z.number().int().min(1).max(64).optional(),
+        memory_mb: z.number().int().min(256).max(262144).optional()
+      },
+      annotations: BASH_ANNOTATIONS,
+      _meta: {
+        ...toolCardMeta(),
+        "openai/toolInvocation/invoking": "Managing disposable VM...",
+        "openai/toolInvocation/invoked": "Disposable VM action complete"
+      }
+    },
+    async (args) => {
+      try {
+        const result = await runVmToolAction({
+          action: args.action,
+          image: args.image,
+          id: args.id,
+          cpus: args.cpus,
+          memoryMb: args.memory_mb
+        }, vmManager);
+        return textResult(`# VM ${args.action}\n\n${JSON.stringify(result, null, 2)}`, result);
+      } catch (error) {
+        throw new CodexProError(error instanceof Error ? error.message : String(error));
+      }
     }
   );
 

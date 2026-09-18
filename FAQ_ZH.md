@@ -334,7 +334,9 @@ CodexPro 使用 ChatGPT 的官方 Plugins + MCP 接入路径，让你自己的 C
 
 ## CodexPro 生产环境安全吗？
 
-CodexPro 是本地开发桥，不是操作系统级沙箱。
+CodexPro 的宿主机文件和 Bash 工具仍然是本地开发桥，不是操作系统级沙箱。可选的 QEMU VM 运行时可以为软件测试提供独立、可丢弃的来宾系统隔离环境，并使用不可变基础镜像和按实例 overlay。
+
+VM 隔离增加了一层边界，但不代表任意代码都安全；来宾网络、镜像内容以及 QEMU/虚拟化层仍然属于威胁模型。
 
 只在你信任的仓库里使用。公网 tunnel 保持 token auth 开启。保持 safe bash，除非你明确知道为什么需要 full bash。公网暴露前先读 [SECURITY.md](SECURITY.md)。
 

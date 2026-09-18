@@ -16,6 +16,8 @@ import {
   verifyCloudflaredAsset
 } from './cloudflared-release.mjs';
 
+import { runVmCli } from './vm-cli.mjs';
+
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UNTRACKED_FILE_HASH_BYTES = 64 * 1024;
 const UNTRACKED_SYMLINK_TARGET_BYTES = 512;
@@ -38,6 +40,10 @@ Usage:
   codexpro start --root /path/to/repo
   codexpro settings
   codexpro doctor
+  codexpro vm setup
+  codexpro vm doctor
+  codexpro vm images
+  codexpro vm list
   codexpro connection-test --root /path/to/repo
   codexpro inspect --root /path/to/repo [--json]
   codexpro review --root /path/to/repo [--staged] [--path src/file.ts] [--json]
@@ -3836,6 +3842,10 @@ async function main() {
   }
   if (subcommand === 'stable-help') {
     printStableUrlHelp();
+    return;
+  }
+  if (subcommand === 'vm') {
+    await runVmCli(argv.slice(1), projectRoot);
     return;
   }
   if (subcommand === 'setup' || subcommand === 'onboard') {

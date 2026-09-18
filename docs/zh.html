@@ -403,7 +403,7 @@ codexpro start</code></pre>
       <section class="section safety">
         <div>
           <p class="eyebrow">安全边界</p>
-          <h2>这是本地开发桥，不是操作系统级沙箱。</h2>
+          <h2>宿主机工具仍是本地开发桥；可选 QEMU 来宾系统提供独立的可丢弃隔离环境。</h2>
         </div>
         <ul>
           <li>公网 tunnel 默认使用 token 保护。</li>
@@ -413,6 +413,7 @@ codexpro start</code></pre>
           <li><code>--bash-session</code> 加 <code>--require-bash-session</code> 会要求 bash 调用显式命中本地会话标签。</li>
           <li><code>--codex-sessions</code> 默认关闭；开启后只读取本地 Codex JSONL 历史，不进入正在运行的 Codex 聊天。</li>
           <li>只想让 ChatGPT 做计划时，用 handoff 模式。</li>
+          <li>QEMU VM 使用不可变基础镜像和可丢弃 overlay，但这并不代表任意代码都安全。</li>
         </ul>
       </section>
     </main>

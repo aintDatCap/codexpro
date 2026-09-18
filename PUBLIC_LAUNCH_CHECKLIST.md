@@ -104,7 +104,8 @@ codexpro start
 
 ## Known Non-Goals For The Current Local Package
 
-- CodexPro is not an OS sandbox.
+- CodexPro host tools are not an OS sandbox.
+- Optional QEMU VM runtimes provide separate disposable guest isolation for testing, not a guarantee that arbitrary code is safe.
 - CodexPro does not guarantee a ChatGPT model can call MCP tools.
 - CodexPro does not change ChatGPT, Codex, or OpenAI quota behavior.
 - Quick Cloudflare tunnels are not permanent URLs.

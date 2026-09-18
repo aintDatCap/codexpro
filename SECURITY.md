@@ -159,4 +159,6 @@ CodexPro blocks common sensitive paths by default:
 - build/cache folders such as `dist`, `build`, `.next`, `coverage`, `.cache`
 - symlinks that resolve outside the workspace or into blocked paths
 
-These guards reduce risk. They are not an OS sandbox.
+These host-side guards reduce risk. CodexPro's host file and Bash tools remain a local developer bridge, not an OS sandbox.
+
+Optional QEMU VM runtimes provide a separate disposable guest isolation boundary for software testing. They use immutable managed bases, per-instance overlays, bounded resources, and private management channels. That additional boundary improves isolation but is not a guarantee that running arbitrary code is safe.
