@@ -376,6 +376,9 @@ function registerToolCompat(
 }
 
 const MINIMAL_TOOL_NAMES = [
+  "tree",
+  "search",
+  "git",
   "reconnect_workspace",
   "read_output",
   SUPERTOOL_NAME,
@@ -578,6 +581,7 @@ function serverInstructions(config: CodexProConfig): string {
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
     "",
     "Preferred workflow:",
+    "Core repository tools stay registered together: open_current_workspace/open_workspace, tree, search, read, write/edit/apply_patch, show_changes, git, and bash when enabled.",
     "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; that selection stays active for this MCP session.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files. Keep its workspace_id on subsequent calls. After MCP reconnect use reconnect_workspace with that ID (and the original root after a server restart).",
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
@@ -651,6 +655,52 @@ async function untrackedReviewFingerprint(config: CodexProConfig, guard: PathGua
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+async function untrackedTextDiff(
+  config: CodexProConfig,
+  guard: PathGuard,
+  workspace: Workspace,
+  changedFiles: string[]
+): Promise<{ diff: string; warnings: string[] }> {
+  const perFileLimit = Math.min(config.maxReadBytes, 100_000);
+  const totalLimit = Math.min(config.maxOutputBytes, 250_000);
+  const chunks: string[] = [];
+  const warnings: string[] = [];
+  let usedBytes = 0;
+
+  for (const line of changedFiles) {
+    const match = line.match(/^\?\?\s+(.+)$/);
+    if (!match) continue;
+    const relPath = decodeGitQuotedPath(match[1]);
+    if (!relPath) continue;
+    try {
+      const resolved = guard.resolve(workspace, relPath);
+      await guard.assertTextFile(resolved.absPath, perFileLimit);
+      const text = (await fsp.readFile(resolved.absPath, "utf8")).replace(/\r\n/g, "\n");
+      const contentLines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+      const body = contentLines.map((contentLine) => `+${contentLine}`).join("\n");
+      const chunk = [
+        `diff --git a/${resolved.relPath} b/${resolved.relPath}`,
+        "new file mode 100644",
+        "--- /dev/null",
+        `+++ b/${resolved.relPath}`,
+        `@@ -0,0 +1,${contentLines.length} @@`,
+        body
+      ].join("\n");
+      const chunkBytes = Buffer.byteLength(chunk, "utf8");
+      if (usedBytes + chunkBytes > totalLimit) {
+        warnings.push(`Untracked diff output was limited before ${resolved.relPath}.`);
+        break;
+      }
+      chunks.push(chunk);
+      usedBytes += chunkBytes;
+    } catch (error) {
+      warnings.push(`Untracked file ${relPath} was not rendered: ${errorText(error)}`);
+    }
+  }
+
+  return { diff: chunks.join("\n"), warnings };
 }
 
 function normalizeGitOutput(output: string): string {
@@ -1564,7 +1614,7 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         "Open and select the configured default workspace for this MCP session. Use this to return to the launch workspace after switching roots.",
       inputSchema: {
         include_tree: z.boolean().optional().describe("Include a compact file tree. Default: false for speed."),
-        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth when include_tree=true. Default: 2."),
+        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth when include_tree=true. Default: 1 for shallow project discovery."),
         include_skills: z.boolean().optional().describe("Discover skills by name/description. Default: false for speed."),
         include_global_skills: z.boolean().optional().describe("Also scan installed user/plugin skills when include_skills=true. Default: false.")
       },
@@ -1579,7 +1629,8 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       const workspace = workspaces.selectDefaultWorkspace();
       const summary = await workspaceSummary(config, guard, workspace, {
         includeTree: parseBool(args.include_tree, false),
-        maxDepth: limitInt(args.max_depth, 2, 1, 8),
+        maxDepth: limitInt(args.max_depth, 1, 1, 8),
+        maxEntries: 200,
         includeSkills: parseBool(args.include_skills, false),
         includeGlobalSkills: parseBool(args.include_global_skills, false),
         bootstrapContext: false
@@ -1616,8 +1667,8 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         root: z.string().optional().describe("Project directory to open. Omit to use CODEXPRO_ROOT/current working directory. Supports ~/ paths."),
         path: z.string().optional().describe("Alias for root. Useful for clients that naturally send path instead of root."),
         include_tree: z.boolean().optional().describe("Include a compact file tree. Default: true."),
-        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 3."),
-        max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 500."),
+        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 2 for a compact project overview."),
+        max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 250."),
         include_skills: z.boolean().optional().describe("Discover skills by name/description. Default: false for speed."),
         include_global_skills: z.boolean().optional().describe("Also scan installed user/plugin skills when include_skills=true. Default: false."),
         bootstrap_context: z.boolean().optional().describe("Deprecated and ignored. Use handoff_to_agent to create .ai-bridge files.")
@@ -1636,8 +1687,8 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       const workspace = workspaces.openWorkspace(args.root ?? args.path);
       const summary = await workspaceSummary(config, guard, workspace, {
         includeTree: args.include_tree !== false,
-        maxDepth: limitInt(args.max_depth, 3, 1, 8),
-        maxEntries: limitInt(args.max_files, 500, 1, 3000),
+        maxDepth: limitInt(args.max_depth, 2, 1, 8),
+        maxEntries: limitInt(args.max_files, 250, 1, 3000),
         includeSkills: parseBool(args.include_skills, false),
         includeGlobalSkills: parseBool(args.include_global_skills, false),
         bootstrapContext: false
@@ -1671,8 +1722,8 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       description: "Return git status, recent commits, .ai-bridge context, and a compact tree for an opened workspace.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
-        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 3."),
-        max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 500."),
+        max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 2 for a compact project overview."),
+        max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 250."),
         include_skills: z.boolean().optional().describe("Discover repo-local skills. Default: false for speed."),
         include_global_skills: z.boolean().optional().describe("Also scan home-level skill folders when include_skills=true. Default: false.")
       },
@@ -1687,8 +1738,8 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const summary = await workspaceSummary(config, guard, workspace, {
         includeTree: true,
-        maxDepth: limitInt(args.max_depth, 3, 1, 8),
-        maxEntries: limitInt(args.max_files, 500, 1, 3000),
+        maxDepth: limitInt(args.max_depth, 2, 1, 8),
+        maxEntries: limitInt(args.max_files, 250, 1, 3000),
         includeSkills: parseBool(args.include_skills, false),
         includeGlobalSkills: parseBool(args.include_global_skills, false)
       });
@@ -1720,13 +1771,13 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
     "inspect_workspace",
     {
       title: "Inspect Workspace",
-      description: "Build a bounded repository map with languages, project types, entrypoints, areas, symbols, relationships, and coverage warnings.",
+      description: "Build a compact repository map with architecture, project summaries, entrypoints, important files, and coverage. Detailed files, symbols, and relationships are bounded and demand-driven.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Optional workspace-relative area to emphasize. Default: entire workspace."),
-        max_files: z.number().int().min(1).max(100000).optional().describe("Maximum returned file records. Default: 300."),
-        include_symbols: z.boolean().optional().describe("Include symbols in structured output. Default: true."),
-        include_relationships: z.boolean().optional().describe("Include relationships in structured output. Default: true."),
+        max_files: z.number().int().min(1).max(100000).optional().describe("Maximum returned file records. Default: 120."),
+        include_symbols: z.boolean().optional().describe("Include symbols in structured output. Default: false; max_symbols also opts in unless explicitly disabled."),
+        include_relationships: z.boolean().optional().describe("Include relationships in structured output. Default: false; max_relationships also opts in unless explicitly disabled."),
         max_symbols: z.number().int().min(1).max(100000).optional().describe("Maximum returned symbols. Analysis remains bounded by server config."),
         max_relationships: z.number().int().min(1).max(250000).optional().describe("Maximum returned relationships. Analysis remains bounded by server config.")
       },
@@ -1747,25 +1798,32 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       const inScope = (filePath: string) => !prefix || filePath === prefix || filePath.startsWith(`${prefix}/`);
       const areaInScope = (areaPath: string) => !prefix || areaPath === "." || inScope(areaPath) || prefix.startsWith(`${areaPath}/`);
       const cardWorkspaceAnalysis = usesToolCard(config, "inspect_workspace");
-      const fileLimit = cardWorkspaceAnalysis ? 120 : limitInt(args.max_files, 300, 1, config.analysisLimits.maxInventoryFiles);
-      const symbolLimit = cardWorkspaceAnalysis ? 80 : limitInt(args.max_symbols, 500, 1, config.analysisLimits.maxSymbols);
-      const relationshipLimit = cardWorkspaceAnalysis ? 120 : limitInt(args.max_relationships, 800, 1, config.analysisLimits.maxRelationships);
+      const includeSymbols = args.include_symbols === false ? false : args.include_symbols === true || args.max_symbols !== undefined;
+      const includeRelationships = args.include_relationships === false ? false : args.include_relationships === true || args.max_relationships !== undefined;
+      const fileLimit = cardWorkspaceAnalysis ? 80 : limitInt(args.max_files, 120, 1, config.analysisLimits.maxInventoryFiles);
+      const symbolLimit = cardWorkspaceAnalysis ? 60 : limitInt(args.max_symbols, 200, 1, config.analysisLimits.maxSymbols);
+      const relationshipLimit = cardWorkspaceAnalysis ? 80 : limitInt(args.max_relationships, 300, 1, config.analysisLimits.maxRelationships);
       const scopedFiles = result.files.filter((file) => inScope(file.path));
       const scopedSymbols = result.symbols.filter((symbol) => inScope(symbol.path));
       const scopedRelationships = result.relationships.filter((relationship) => inScope(relationship.from) || inScope(relationship.to));
       const files = scopedFiles.slice(0, fileLimit);
-      const symbols = args.include_symbols === false
+      const symbols = !includeSymbols
         ? []
         : scopedSymbols.slice(0, symbolLimit);
-      const relationships = args.include_relationships === false
+      const relationships = !includeRelationships
         ? []
         : scopedRelationships.slice(0, relationshipLimit);
+      const scopedProjectSummaries = result.projectSummaries.filter((summary) => areaInScope(summary.path));
+      const projectSummaryLimit = prefix ? 24 : 16;
+      const projectSummaries = scopedProjectSummaries.slice(0, projectSummaryLimit);
+      const projectSummariesLimited = projectSummaries.length < scopedProjectSummaries.length;
       const outputLimited = files.length < scopedFiles.length ||
-        (args.include_symbols !== false && symbols.length < scopedSymbols.length) ||
-        (args.include_relationships !== false && relationships.length < scopedRelationships.length);
+        (includeSymbols && symbols.length < scopedSymbols.length) ||
+        (includeRelationships && relationships.length < scopedRelationships.length);
       const outputWarnings = [
         ...result.warnings,
-        ...(outputLimited ? ["Structured output was limited. Use path or max_* arguments to request a narrower or larger result."] : [])
+        ...(outputLimited ? ["Structured output was limited. Use path or max_* arguments to request a narrower or larger result."] : []),
+        ...(projectSummariesLimited ? ["Project summaries were limited. Use path to inspect a specific workspace or area."] : [])
       ];
       const text = [
         "# Workspace Analysis",
@@ -1776,6 +1834,17 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         `Entrypoints: ${result.entrypoints.filter(inScope).join(", ") || "none detected"}`,
         `Coverage: ${result.coverage.analyzedFiles}/${result.coverage.inventoryFiles} files analyzed, ${result.coverage.symbolCount} symbols, ${result.coverage.relationshipCount} relationships${result.coverage.truncated ? " (partial)" : ""}`,
         `Returned: ${files.length} files, ${symbols.length} symbols, ${relationships.length} relationships`,
+        ...(projectSummaries.length ? [
+          "",
+          "## Project summaries",
+          "",
+          ...projectSummaries.map((summary) => {
+            const kinds = summary.projectTypes.join("/") || "project";
+            const languages = summary.languages.join("/") || "unknown language";
+            const entrypoints = summary.entrypoints.slice(0, 3).join(", ");
+            return `- ${summary.path} — ${kinds}; ${languages}; ${summary.sourceFiles} source, ${summary.testFiles} test${entrypoints ? `; entrypoints: ${entrypoints}` : ""}`;
+          })
+        ] : []),
         ...(outputWarnings.length ? ["", "## Warnings", "", ...outputWarnings.map((warning) => `- ${warning}`)] : [])
       ].join("\n");
       return textResult(text, {
@@ -1788,6 +1857,7 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         entrypoints: result.entrypoints.filter(inScope),
         important_files: result.importantFiles.filter(inScope),
         areas: result.areas.filter((area) => areaInScope(area.path)),
+        project_summaries: projectSummaries,
         files,
         symbols,
         relationships,
@@ -2477,17 +2547,21 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
       const statusError = looksLikeGitError(status) ? status : "";
       const diffError = rawDiff && looksLikeGitError(rawDiff) ? rawDiff : "";
       const diff = diffError ? "" : rawDiff;
-      const stats = diffStats(diff);
       const changedFiles = statusError ? [] : changedStatusLines(status);
+      const untrackedReview = !statusError && !staged && includeDiff
+        ? await untrackedTextDiff(config, guard, workspace, changedFiles)
+        : { diff: "", warnings: [] as string[] };
+      const combinedDiff = [diff, untrackedReview.diff].filter(Boolean).join("\n");
+      const stats = diffStats(combinedDiff);
       const untrackedFingerprint = statusError ? "" : await untrackedReviewFingerprint(config, guard, workspace, changedFiles);
       const since = args.since === "workspace" ? "workspace" : "last_shown";
       const markReviewed = parseBool(args.mark_reviewed, true);
       const checkpointKey = reviewCheckpointKey(workspace, { path: normalizedScopedPath, staged });
-      const fingerprint = reviewFingerprint(status, `${diff}\0${untrackedFingerprint}`);
+      const fingerprint = reviewFingerprint(status, `${combinedDiff}\0${untrackedFingerprint}`);
       const checkpointHit = includeDiff && since === "last_shown" && reviewCheckpoints.get(checkpointKey) === fingerprint;
       const checkpointWritten = markReviewed && includeDiff;
       if (checkpointWritten) reviewCheckpoints.set(checkpointKey, fingerprint);
-      const responseDiff = checkpointHit ? "" : includeDiff ? diff : "";
+      const responseDiff = checkpointHit ? "" : includeDiff ? combinedDiff : "";
       const responseStats = checkpointHit ? { additions: 0, deletions: 0, changed: false } : stats;
       const changedPaths = statusError ? [] : changedPathsFromStatus(changedFiles);
       let analysis: Record<string, unknown> | undefined;
@@ -2531,14 +2605,17 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         : includeDiff
         ? diffError
           ? `\n\nGit diff unavailable: ${diffError}`
-          : diff
-          ? diffBlock(diff)
+          : combinedDiff
+          ? diffBlock(combinedDiff)
             : "\n\nNo diff output."
         : "\n\nDiff omitted by request.";
       const analysisText = analysis
         ? `\n\n## Analysis\n\nAffected areas: ${(analysis.affected_areas as string[]).join(", ") || "none"}\nRisks: ${((analysis.risk_signals as Array<{ label?: string }>) ?? []).map((risk) => risk.label).filter(Boolean).join(", ") || "none"}\nRelated tests: ${((analysis.related_tests as Array<{ path?: string }>) ?? []).map((file) => file.path).filter(Boolean).join(", ") || "none"}`
         : "";
-      const text = `# Show Changes\n\nWorkspace: ${workspace.root}\n\n## Changed\n\n${changedText}\n\n## Diff stats\n\n+${responseStats.additions} -${responseStats.deletions}${diffText}${analysisText}`;
+      const warningText = untrackedReview.warnings.length
+        ? `\n\n## Review warnings\n\n${untrackedReview.warnings.map((warning) => `- ${warning}`).join("\n")}`
+        : "";
+      const text = `# Show Changes\n\nWorkspace: ${workspace.root}\n\n## Changed\n\n${changedText}\n\n## Diff stats\n\n+${responseStats.additions} -${responseStats.deletions}${diffText}${analysisText}${warningText}`;
       return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,

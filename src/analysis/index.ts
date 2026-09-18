@@ -1,5 +1,6 @@
 import type { CodexProConfig } from "../config.js";
 import fsp from "node:fs/promises";
+import path from "node:path";
 import type { PathGuard, Workspace } from "../guard.js";
 import { redactSensitiveText } from "../redact.js";
 import { detectProjectTypes } from "./classify.js";
@@ -26,6 +27,54 @@ function areasFor(files: WorkspaceAnalysis["files"]): WorkspaceAnalysis["areas"]
   return [...counts.entries()].map(([areaPath, value]) => ({ path: areaPath, ...value })).sort((a, b) => b.files - a.files || a.path.localeCompare(b.path));
 }
 
+const PROJECT_MARKERS = new Set([
+  "package.json",
+  "pyproject.toml",
+  "requirements.txt",
+  "go.mod",
+  "Cargo.toml",
+  "Package.swift",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "CMakeLists.txt",
+  "Makefile"
+]);
+
+function isProjectMarker(filePath: string): boolean {
+  const basename = path.posix.basename(filePath);
+  return PROJECT_MARKERS.has(basename) || /\.(?:sln|csproj)$/i.test(basename);
+}
+
+function projectSummariesFor(files: WorkspaceAnalysis["files"]): WorkspaceAnalysis["projectSummaries"] {
+  const roots = new Set<string>();
+  for (const file of files) {
+    if (!isProjectMarker(file.path)) continue;
+    const dir = path.posix.dirname(file.path);
+    roots.add(dir === "." ? "." : dir);
+  }
+  const nestedRoots = [...roots].filter((root) => root !== ".");
+  const selectedRoots = nestedRoots.length ? nestedRoots : roots.has(".") ? ["."] : [];
+  return selectedRoots
+    .map((root) => {
+      const scopedFiles = root === "." ? files : files.filter((file) => file.path === root || file.path.startsWith(`${root}/`));
+      const languages = [...new Set(scopedFiles.map((file) => file.language).filter((language) => language !== "unknown"))].sort();
+      return {
+        path: root,
+        projectTypes: detectProjectTypes(scopedFiles),
+        languages,
+        sourceFiles: scopedFiles.filter((file) => file.role === "source").length,
+        testFiles: scopedFiles.filter((file) => file.role === "test").length,
+        configFiles: scopedFiles.filter((file) => file.role === "config").length,
+        entrypoints: scopedFiles.filter((file) => file.entrypoint).map((file) => file.path),
+        importantFiles: scopedFiles
+          .filter((file) => file.role === "config" || /(^|\/)(README|AGENTS)\.md$/i.test(file.path))
+          .map((file) => file.path)
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export async function inspectWorkspace(config: CodexProConfig, guard: PathGuard, workspace: Workspace): Promise<WorkspaceAnalysis> {
   if (!config.analysisEnabled) throw new Error("Repository analysis is disabled by CODEXPRO_ANALYSIS=0.");
   const inventory = await inventoryWorkspace(config, guard, workspace);
@@ -47,6 +96,7 @@ export async function inspectWorkspace(config: CodexProConfig, guard: PathGuard,
     entrypoints: inventory.files.filter((file) => file.entrypoint).map((file) => file.path),
     importantFiles: inventory.files.filter((file) => file.role === "config" || /(^|\/)(README|AGENTS)\.md$/i.test(file.path)).map((file) => file.path),
     areas: areasFor(inventory.files),
+    projectSummaries: projectSummariesFor(inventory.files),
     files: inventory.files,
     symbols,
     relationships,

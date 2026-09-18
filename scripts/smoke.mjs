@@ -1199,7 +1199,7 @@ async function assertToolMode(mode, expected, hidden, extraEnv = {}) {
 }
 
 await assertToolMode('', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent'], ['codexpro_inventory', 'workspace_snapshot', 'git_status', 'git_diff', 'codex_context', 'handoff_to_codex']);
-await assertToolMode('minimal', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'read', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes'], ['inspect_workspace', 'tree', 'search', 'load_skill', 'view_image', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
+await assertToolMode('minimal', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'tree', 'search', 'read', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'git', 'show_changes'], ['inspect_workspace', 'load_skill', 'view_image', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
 await assertToolMode('', ['codexpro', 'server_config', 'show_changes', 'search'], ['inspect_workspace'], { CODEXPRO_ANALYSIS: '0' });
 
 const handoffWriteClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--write', 'handoff'], {

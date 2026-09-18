@@ -88,6 +88,17 @@ export interface AnalysisArea {
   files: number;
 }
 
+export interface AnalysisProjectSummary {
+  path: string;
+  projectTypes: string[];
+  languages: AnalysisLanguage[];
+  sourceFiles: number;
+  testFiles: number;
+  configFiles: number;
+  entrypoints: string[];
+  importantFiles: string[];
+}
+
 export interface WorkspaceAnalysis {
   schemaVersion: 1;
   workspaceId: string;
@@ -97,6 +108,7 @@ export interface WorkspaceAnalysis {
   entrypoints: string[];
   importantFiles: string[];
   areas: AnalysisArea[];
+  projectSummaries: AnalysisProjectSummary[];
   files: InventoryFile[];
   symbols: AnalysisSymbol[];
   relationships: AnalysisRelationship[];
