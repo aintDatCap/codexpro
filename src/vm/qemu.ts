@@ -28,13 +28,9 @@ export const nodeCommandExecutor: CommandExecutor = {
           maxBuffer: 4 * 1024 * 1024
         },
         (error, stdout, stderr) => {
-          const exitCode =
-            error && typeof (error as NodeJS.ErrnoException & { code?: number | string }).code === "number"
-              ? (error as NodeJS.ErrnoException & { code: number }).code
-              : error
-                ? 1
-                : 0;
-          if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          const errorCode = error?.code;
+          const exitCode = typeof errorCode === "number" ? errorCode : error ? 1 : 0;
+          if (errorCode === "ENOENT") {
             reject(new Error(`Executable not found: ${command}`));
             return;
           }

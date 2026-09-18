@@ -1130,7 +1130,7 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
         "Stable wrapper for advanced ChatGPT connector setups. Pass action plus args to call an already-registered CodexPro tool without changing the visible schema; it cannot call tools disabled by the current mode.",
       inputSchema: {
         action: z.string().optional().describe("Action or registered tool name. Use list_actions to see what this server mode allows."),
-        args: z.record(z.any()).optional().describe("Arguments for the selected action. Same shape as the wrapped CodexPro tool.")
+        args: z.record(z.string(), z.any()).optional().describe("Arguments for the selected action. Same shape as the wrapped CodexPro tool.")
       },
       annotations: BASH_ANNOTATIONS,
       _meta: {
