@@ -34,7 +34,7 @@ Run the interactive wizard:
 codexpro vm setup
 ```
 
-It asks for an image name, source image path, architecture, default CPU count, default memory, VM storage location, desktop metadata, and whether to perform a validation boot. Boolean questions display their choices explicitly as `yes/no`.
+It asks for an image name, source image path, architecture, default CPU count, default memory, VM storage location, desktop metadata, and whether to perform a validation boot. Boolean questions display their choices explicitly as `yes/no`. If the source is an installer `.iso`, the wizard also asks for the target virtual disk size.
 
 For CI or other non-interactive use, provide required values explicitly:
 
@@ -52,7 +52,9 @@ codexpro vm setup \
 
 `--headless` never prompts. Missing `--name` or `--image` is an error. Setup remembers the selected VM storage root for later VM commands. Use `--vm-home <dir>` for a per-command override, or set `CODEXPRO_VM_HOME` for an environment override, without moving the rest of `CODEXPRO_HOME`.
 
-The supplied source image is never registered or booted directly. CodexPro inspects it with `qemu-img`, converts it into a self-contained qcow2 file, checks it, hashes it with SHA-256, and atomically moves it into CodexPro's private image store. The original file is not modified. Source images with external backing files are rejected so image metadata cannot make CodexPro follow arbitrary host paths; flatten such chains yourself before import.
+For a normal disk image, CodexPro inspects it with `qemu-img`, converts it into a self-contained qcow2 file, checks it, hashes it with SHA-256, and atomically moves it into the private image store. Source images with external backing files are rejected so image metadata cannot make CodexPro follow arbitrary host paths; flatten such chains yourself before import.
+
+For an installer `.iso`, CodexPro creates a blank qcow2 disk (64 GiB by default, configurable with `--disk-size <GiB>`) and launches `qemu-system-*` with the ISO attached as read-only CD-ROM installation media. Complete the OS installer in the QEMU window and shut the guest down; CodexPro then imports the installed qcow2 disk into the normal immutable image store. Generic ISO installs are interactive, so `.iso` input is not supported with `--headless`.
 
 By default, managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/vm`), not in the project repository. A custom `--vm-home` or `CODEXPRO_VM_HOME` points directly at the VM storage root:
 
@@ -71,7 +73,7 @@ By default, managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/
         qemu.log
 ```
 
-The manifest stores the original file name, not the original absolute host path.
+The manifest stores a source filename/provenance label, never the original absolute host path. ISO-installed disks use an `.installed.qcow2` provenance label.
 
 ## Immutable base images and disposable overlays
 

@@ -24,9 +24,9 @@ function windowsPipePath(name: string): string {
 }
 
 function socketForEndpoint(endpoint: LocalChannelEndpoint): net.Socket {
-  return endpoint.transport === "unix"
-    ? net.createConnection({ path: endpoint.path })
-    : net.createConnection({ path: windowsPipePath(endpoint.name) });
+  if (endpoint.transport === "unix") return net.createConnection({ path: endpoint.path });
+  if (endpoint.transport === "pipe") return net.createConnection({ path: windowsPipePath(endpoint.name) });
+  return net.createConnection({ host: endpoint.host, port: endpoint.port });
 }
 
 async function waitForConnect(socket: net.Socket, timeoutMs: number): Promise<void> {

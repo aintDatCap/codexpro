@@ -9,6 +9,8 @@ import {
   InstanceStore,
   VmManager,
   acceleratorForPlatform,
+  allocateLoopbackPort,
+  buildQemuInstallerArgs,
   buildQemuLaunchArgs,
   configuredVmRoot,
   discoverExecutable,
@@ -98,8 +100,10 @@ try {
 
   const sourceImage = path.join(root, 'source.qcow2');
   const backedSource = path.join(root, 'source-with-backing.qcow2');
+  const installerIso = path.join(root, 'installer.iso');
   await fs.writeFile(sourceImage, 'source image bytes');
   await fs.writeFile(backedSource, 'backed source bytes');
+  await fs.writeFile(installerIso, 'installer media bytes');
   const fakeCommands = [];
   const importExecutor = {
     async run(command, args) {
@@ -137,6 +141,21 @@ try {
     }
   };
   const imageStore = new ImageStore({ home: path.join(root, 'import-home'), executor: importExecutor });
+  const commandCountBeforeIso = fakeCommands.length;
+  await assert.rejects(
+    () => imageStore.importImage({
+      name: 'installer-media',
+      sourcePath: installerIso,
+      architecture: 'x86_64',
+      defaultCpus: 2,
+      defaultMemoryMb: 2048,
+      desktop: true,
+      qemuImg: 'qemu-img'
+    }),
+    /Installer ISO files must be handled through the CodexPro VM setup flow/
+  );
+  assert.equal(fakeCommands.length, commandCountBeforeIso);
+
   const imported = await imageStore.importImage({
     name: 'flattened',
     sourcePath: sourceImage,
@@ -196,6 +215,9 @@ try {
   assert.ok(launchArgs.join(' ').includes('overlay.qcow2'));
   assert.ok(!launchArgs.join(' ').includes('base.qcow2'));
   assert.ok(launchArgs.join(' ').includes('org.qemu.guest_agent.0'));
+  assert.ok(launchArgs.join(' ').includes('ich9-ahci,id=codexpro-ahci'));
+  assert.ok(launchArgs.join(' ').includes('ide-hd,drive=codexpro-disk,bus=codexpro-ahci.0'));
+  assert.ok(launchArgs.includes('user,model=e1000e'));
   assert.ok(launchArgs.includes('-pidfile'));
   assert.ok(launchArgs.includes('/managed/instances/vm-0123456789abcdef/qemu.pid'));
   const armLaunchArgs = buildQemuLaunchArgs({
@@ -210,15 +232,49 @@ try {
     qga: { transport: 'unix', path: '/managed/arm-qga.sock' }
   });
   assert.equal(armLaunchArgs[armLaunchArgs.indexOf('-cpu') + 1], 'host');
+  assert.ok(armLaunchArgs.join(' ').includes('virtio-blk-pci,drive=codexpro-disk'));
+
+  const installerArgs = buildQemuInstallerArgs({
+    name: 'win-dev',
+    architecture: 'x86_64',
+    accelerator: 'whpx',
+    cpus: 4,
+    memoryMb: 8192,
+    diskPath: 'E:/codexprovm/install-disk.qcow2',
+    isoPath: 'E:/isos/windows.iso'
+  });
+  assert.ok(installerArgs.join(' ').includes('ich9-ahci,id=codexpro-ahci'));
+  assert.ok(installerArgs.join(' ').includes('ide-hd,drive=install-disk,bus=codexpro-ahci.0'));
+  assert.ok(installerArgs.join(' ').includes('ide-cd,drive=install-cd,bus=codexpro-ahci.1'));
+  assert.ok(installerArgs.join(' ').includes('windows.iso'));
+  assert.ok(installerArgs.includes('once=d'));
+  assert.ok(installerArgs.includes('user,model=e1000e'));
+
   const pipeName = 'codexpro-vm-0123456789abcdef-qmp';
   assert.equal(qmpArgument({ transport: 'pipe', name: pipeName }), `pipe:${pipeName}`);
   assert.ok(qgaArguments({ transport: 'pipe', name: 'codexpro-vm-0123456789abcdef-qga' })[1].startsWith('pipe,'));
+  const loopbackPort = await allocateLoopbackPort();
+  assert.ok(loopbackPort > 0 && loopbackPort <= 65535);
+  assert.equal(
+    qgaArguments({ transport: 'tcp', host: '127.0.0.1', port: loopbackPort })[1],
+    `socket,id=qga0,host=127.0.0.1,port=${loopbackPort},server=on,wait=off,nodelay=on,ipv4=on`
+  );
 
   const store = new InstanceStore({ home });
-  const allocation = await store.allocate('ubuntu-dev', 2, 2048, 'kvm', false);
+  const allocation = await store.allocate(
+    'ubuntu-dev',
+    2,
+    2048,
+    'kvm',
+    false,
+    undefined,
+    { transport: 'tcp', host: '127.0.0.1', port: loopbackPort }
+  );
   assert.match(allocation.record.id, /^vm-[a-f0-9]{16}$/);
   assert.equal(allocation.pidPath, path.join(allocation.instanceDir, 'qemu.pid'));
-  assert.equal((await store.read(allocation.record.id)).image, 'ubuntu-dev');
+  const storedAllocation = await store.read(allocation.record.id);
+  assert.equal(storedAllocation.image, 'ubuntu-dev');
+  assert.deepEqual(storedAllocation.qga, { transport: 'tcp', host: '127.0.0.1', port: loopbackPort });
   const recovering = await store.allocate('ubuntu-dev', 1, 512, 'kvm', false);
   await store.update(recovering.record.id, { state: 'starting' });
   await fs.writeFile(recovering.pidPath, String(process.pid));
@@ -246,6 +302,7 @@ try {
   const help = spawnSync(process.execPath, [cli, 'vm', '--help'], { cwd: path.resolve('.'), env, encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /codexpro vm setup/);
+  assert.match(help.stdout, /--disk-size <GiB>/);
   assert.match(help.stdout, /--vm-home <dir>/);
   assert.match(help.stdout, /never downloads or installs QEMU automatically/);
 

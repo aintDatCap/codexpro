@@ -4,7 +4,8 @@ export type VmInstanceState = "created" | "starting" | "running" | "stopped" | "
 
 export type LocalChannelEndpoint =
   | { transport: "unix"; path: string }
-  | { transport: "pipe"; name: string };
+  | { transport: "pipe"; name: string }
+  | { transport: "tcp"; host: "127.0.0.1"; port: number };
 
 export interface VmImageValidation {
   bootTested: boolean;
@@ -173,6 +174,13 @@ function parseEndpoint(value: unknown, label: string): LocalChannelEndpoint {
       throw new Error(`${label}.name is not a valid CodexPro VM pipe name.`);
     }
     return { transport: "pipe", name };
+  }
+  if (input.transport === "tcp") {
+    const host = requiredString(input.host, `${label}.host`);
+    const port = requiredInteger(input.port, `${label}.port`);
+    if (host !== "127.0.0.1") throw new Error(`${label}.host must be 127.0.0.1.`);
+    if (port < 1 || port > 65_535) throw new Error(`${label}.port must be from 1 to 65535.`);
+    return { transport: "tcp", host, port };
   }
   throw new Error(`${label}.transport is invalid.`);
 }

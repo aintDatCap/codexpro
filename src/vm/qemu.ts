@@ -123,6 +123,16 @@ export async function convertImageToQcow2(
   if (result.exitCode !== 0) throw new Error(`qemu-img convert failed: ${result.stderr.trim() || "unknown error"}`);
 }
 
+export async function createQcow2Disk(
+  executor: CommandExecutor,
+  qemuImg: string,
+  destinationPath: string,
+  sizeGiB: number
+): Promise<void> {
+  const result = await executor.run(qemuImg, ["create", "-f", "qcow2", destinationPath, `${sizeGiB}G`], { timeoutMs: 30_000 });
+  if (result.exitCode !== 0) throw new Error(`qemu-img create failed: ${result.stderr.trim() || "unknown error"}`);
+}
+
 export async function checkQcow2(executor: CommandExecutor, qemuImg: string, imagePath: string): Promise<void> {
   const result = await executor.run(qemuImg, ["check", "--output=json", imagePath], { timeoutMs: 2 * 60_000 });
   if (result.exitCode !== 0) throw new Error(`qemu-img check failed: ${result.stderr.trim() || result.stdout.trim() || "unknown error"}`);
@@ -152,15 +162,17 @@ function keyval(value: string): string {
 }
 
 export function qmpArgument(endpoint: LocalChannelEndpoint): string {
-  return endpoint.transport === "unix"
-    ? `unix:${keyval(endpoint.path)},server=on,wait=off`
-    : `pipe:${keyval(endpoint.name)}`;
+  if (endpoint.transport === "unix") return `unix:${keyval(endpoint.path)},server=on,wait=off`;
+  if (endpoint.transport === "pipe") return `pipe:${keyval(endpoint.name)}`;
+  return `tcp:${endpoint.host}:${endpoint.port},server=on,wait=off,nodelay=on`;
 }
 
 export function qgaArguments(endpoint: LocalChannelEndpoint): string[] {
   const backend = endpoint.transport === "unix"
     ? `socket,id=qga0,path=${keyval(endpoint.path)},server=on,wait=off`
-    : `pipe,id=qga0,path=${keyval(endpoint.name)}`;
+    : endpoint.transport === "pipe"
+      ? `pipe,id=qga0,path=${keyval(endpoint.name)}`
+      : `socket,id=qga0,host=${endpoint.host},port=${endpoint.port},server=on,wait=off,nodelay=on,ipv4=on`;
   return [
     "-chardev",
     backend,
@@ -189,6 +201,9 @@ export function buildQemuLaunchArgs(options: QemuLaunchOptions): string[] {
     "node-name": "codexpro-disk",
     file: { driver: "file", filename: options.overlayPath }
   });
+  const diskArgs = options.architecture === "x86_64"
+    ? ["-device", "ich9-ahci,id=codexpro-ahci", "-device", "ide-hd,drive=codexpro-disk,bus=codexpro-ahci.0"]
+    : ["-device", "virtio-blk-pci,drive=codexpro-disk"];
   return [
     "-name",
     `codexpro-${options.id}`,
@@ -205,10 +220,9 @@ export function buildQemuLaunchArgs(options: QemuLaunchOptions): string[] {
     options.pidFilePath,
     "-blockdev",
     block,
-    "-device",
-    "virtio-blk-pci,drive=codexpro-disk",
+    ...diskArgs,
     "-nic",
-    "user,model=virtio-net-pci",
+    options.architecture === "x86_64" ? "user,model=e1000e" : "user,model=virtio-net-pci",
     "-display",
     "none",
     "-serial",
@@ -221,17 +235,76 @@ export function buildQemuLaunchArgs(options: QemuLaunchOptions): string[] {
   ];
 }
 
-export function startQemuProcess(binary: string, args: readonly string[], logPath: string): ChildProcess {
+export interface QemuInstallerOptions {
+  name: string;
+  architecture: VmArchitecture;
+  accelerator: VmAccelerator;
+  cpus: number;
+  memoryMb: number;
+  diskPath: string;
+  isoPath: string;
+}
+
+export function buildQemuInstallerArgs(options: QemuInstallerOptions): string[] {
+  const diskDrive = `file=${keyval(options.diskPath)},if=none,format=qcow2,id=install-disk`;
+  const isoDrive = `file=${keyval(options.isoPath)},if=none,media=cdrom,readonly=on,id=install-cd`;
+  const storageArgs = options.architecture === "x86_64"
+    ? [
+        "-device", "ich9-ahci,id=codexpro-ahci",
+        "-drive", diskDrive,
+        "-device", "ide-hd,drive=install-disk,bus=codexpro-ahci.0",
+        "-drive", isoDrive,
+        "-device", "ide-cd,drive=install-cd,bus=codexpro-ahci.1"
+      ]
+    : [
+        "-device", "virtio-scsi-pci,id=codexpro-scsi",
+        "-drive", diskDrive,
+        "-device", "scsi-hd,drive=install-disk,bus=codexpro-scsi.0",
+        "-drive", isoDrive,
+        "-device", "scsi-cd,drive=install-cd,bus=codexpro-scsi.0"
+      ];
+  return [
+    "-name", `codexpro-install-${options.name}`,
+    "-machine", qemuMachineForArchitecture(options.architecture),
+    "-accel", options.accelerator,
+    ...(options.architecture === "aarch64" ? ["-cpu", "host"] : []),
+    "-smp", String(options.cpus),
+    "-m", String(options.memoryMb),
+    ...storageArgs,
+    "-nic", options.architecture === "x86_64" ? "user,model=e1000e" : "user,model=virtio-net-pci",
+    "-boot", "once=d",
+    "-serial", "none",
+    "-monitor", "none"
+  ];
+}
+
+export function startQemuProcess(
+  binary: string,
+  args: readonly string[],
+  logPath: string,
+  options: { windowsHide?: boolean } = {}
+): ChildProcess {
   const fd = fs.openSync(logPath, "a", 0o600);
   try {
     return spawn(binary, [...args], {
       stdio: ["ignore", "ignore", fd],
-      windowsHide: true,
+      windowsHide: options.windowsHide ?? true,
       detached: false
     });
   } finally {
     fs.closeSync(fd);
   }
+}
+
+export async function runQemuInstaller(binary: string, args: readonly string[], logPath: string): Promise<void> {
+  const child = startQemuProcess(binary, args, logPath, { windowsHide: false });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`QEMU installer exited ${signal ? `with signal ${signal}` : `with code ${String(code)}`}.`));
+    });
+  });
 }
 
 export async function readLogTail(logPath: string, maxBytes = 16_384): Promise<string> {

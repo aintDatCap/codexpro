@@ -22,6 +22,7 @@ import {
 export interface ImportImageOptions {
   name: string;
   sourcePath: string;
+  sourceFileName?: string;
   architecture: VmArchitecture;
   defaultCpus: number;
   defaultMemoryMb: number;
@@ -102,6 +103,9 @@ export class ImageStore {
     const sourcePath = path.resolve(options.sourcePath);
     const sourceStat = await fsp.stat(sourcePath).catch(() => undefined);
     if (!sourceStat?.isFile()) throw new Error("The VM source image must be an existing regular file.");
+    if (path.extname(sourcePath).toLowerCase() === ".iso") {
+      throw new Error("Installer ISO files must be handled through the CodexPro VM setup flow.");
+    }
 
     const sourceInfo = await inspectImage(this.executor, options.qemuImg, sourcePath);
     if (sourceInfo["backing-filename"]) {
@@ -153,7 +157,7 @@ export class ImageStore {
         desktop: options.desktop,
         createdAt: new Date().toISOString(),
         source: {
-          originalFileName: path.basename(sourcePath)
+          originalFileName: path.basename(options.sourceFileName ?? sourcePath)
         },
         validation: {
           bootTested: false,

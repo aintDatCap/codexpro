@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import fsp from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { codexProHome } from "../profileStore.js";
@@ -7,11 +9,14 @@ import { ImageStore } from "./imageStore.js";
 import { InstanceStore } from "./instanceStore.js";
 import {
   binaryVersion,
+  buildQemuInstallerArgs,
   buildQemuLaunchArgs,
   createOverlay,
+  createQcow2Disk,
   discoverExecutable,
   nodeCommandExecutor,
   readLogTail,
+  runQemuInstaller,
   startQemuProcess,
   systemBinaryName,
   type CommandExecutor
@@ -47,6 +52,8 @@ export interface SetupVmImageOptions {
   memoryMb: number;
   desktop: boolean;
   validate?: boolean;
+  diskSizeGb?: number;
+  headless?: boolean;
 }
 
 export interface CreateVmOptions {
@@ -97,6 +104,27 @@ export interface PublicVmInstance {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function allocateLoopbackPort(): Promise<number> {
+  const server = net.createServer();
+  return new Promise<number>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      server.off("error", onError);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Unable to allocate a loopback port for the VM guest-agent channel.")));
+        return;
+      }
+      const port = address.port;
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(port);
+      });
+    });
+  });
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -260,22 +288,105 @@ export class VmManager {
     };
   }
 
+  private async installIsoImage(
+    options: SetupVmImageOptions,
+    name: string,
+    architecture: VmArchitecture,
+    qemuImg: string,
+    qemuSystem: string
+  ): Promise<VmImageManifest> {
+    if (options.headless) {
+      throw new Error(
+        "Installer ISO setup requires an interactive QEMU display. Use a preinstalled VM disk for --headless setup."
+      );
+    }
+    const diskSizeGb = options.diskSizeGb ?? 64;
+    if (!Number.isSafeInteger(diskSizeGb) || diskSizeGb < 4 || diskSizeGb > 2_048) {
+      throw new Error("ISO installation disk size must be an integer from 4 to 2048 GiB.");
+    }
+    const sourcePath = path.resolve(options.sourcePath);
+    const sourceStat = await fsp.stat(sourcePath).catch(() => undefined);
+    if (!sourceStat?.isFile()) throw new Error("The VM installer ISO must be an existing regular file.");
+    const installedDir = this.images.imageDir(name);
+    if (await fsp.stat(installedDir).catch(() => undefined)) {
+      const existing = await this.images.readManifest(name, false).catch(() => undefined);
+      if (existing && path.extname(existing.source.originalFileName).toLowerCase() === ".iso") {
+        throw new Error(
+          `VM image "${name}" is an older ISO import (${existing.source.originalFileName}), not an installed disk. Remove or rename that image, then run setup again to install the ISO into a qcow2 disk.`
+        );
+      }
+      throw new Error(`VM image "${name}" is already installed. Choose a different name.`);
+    }
+
+    const probe = await this.accelerator(architecture, qemuSystem);
+    if (!probe.accelerator || !probe.usable) {
+      throw new Error(
+        "Hardware acceleration is unavailable for ISO installation: " +
+          (probe.reason ?? "probe failed") +
+          ". CodexPro does not silently fall back to TCG software emulation."
+      );
+    }
+
+    const layout = await ensureVmHome(this.home, this.vmRoot);
+    const stagingDir = path.join(
+      layout.root,
+      `.install-${name}-${process.pid}-${randomBytes(6).toString("hex")}`
+    );
+    await fsp.mkdir(stagingDir, { recursive: false, mode: 0o700 });
+    const diskPath = path.join(stagingDir, "installed.qcow2");
+    const logPath = path.join(stagingDir, "installer.log");
+    try {
+      await createQcow2Disk(this.executor, qemuImg, diskPath, diskSizeGb);
+      const args = buildQemuInstallerArgs({
+        name,
+        architecture,
+        accelerator: probe.accelerator,
+        cpus: options.cpus,
+        memoryMb: options.memoryMb,
+        diskPath,
+        isoPath: sourcePath
+      });
+      try {
+        await runQemuInstaller(qemuSystem, args, logPath);
+      } catch (error) {
+        const log = await readLogTail(logPath);
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error("QEMU installer failed: " + detail + (log ? "\nQEMU: " + log : ""));
+      }
+      return await this.images.importImage({
+        name,
+        sourcePath: diskPath,
+        sourceFileName: `${path.basename(sourcePath)}.installed.qcow2`,
+        architecture,
+        defaultCpus: options.cpus,
+        defaultMemoryMb: options.memoryMb,
+        desktop: Boolean(options.desktop),
+        qemuImg
+      });
+    } finally {
+      await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   async setupImage(options: SetupVmImageOptions): Promise<VmImageManifest> {
     const name = validateImageName(options.name);
     const architecture = normalizeArchitecture(options.architecture);
     validateResources(options.cpus, options.memoryMb);
     const qemuImg = this.requireQemuImg();
-    this.requireQemuSystem(architecture);
+    const qemuSystem = this.requireQemuSystem(architecture);
+    const sourcePath = path.resolve(options.sourcePath);
 
-    let manifest = await this.images.importImage({
-      name,
-      sourcePath: options.sourcePath,
-      architecture,
-      defaultCpus: options.cpus,
-      defaultMemoryMb: options.memoryMb,
-      desktop: Boolean(options.desktop),
-      qemuImg
-    });
+    let manifest = path.extname(sourcePath).toLowerCase() === ".iso"
+      ? await this.installIsoImage(options, name, architecture, qemuImg, qemuSystem)
+      : await this.images.importImage({
+          name,
+          sourcePath,
+          architecture,
+          defaultCpus: options.cpus,
+          defaultMemoryMb: options.memoryMb,
+          desktop: Boolean(options.desktop),
+          qemuImg
+        });
 
     if (options.validate) {
       try {
@@ -294,7 +405,8 @@ export class VmManager {
 
   private async endpoint(id: string, kind: "qmp" | "qga"): Promise<LocalChannelEndpoint> {
     if (process.platform === "win32") {
-      return { transport: "pipe", name: `codexpro-${id}-${kind}` };
+      if (kind === "qmp") return { transport: "pipe", name: `codexpro-${id}-${kind}` };
+      return { transport: "tcp", host: "127.0.0.1", port: await allocateLoopbackPort() };
     }
     const socketPath = kind === "qmp" ? this.instances.qmpSocketPath(id) : this.instances.qgaSocketPath(id);
     await fsp.rm(socketPath, { force: true }).catch(() => {});
@@ -304,6 +416,11 @@ export class VmManager {
   async createInstance(image: string, options: CreateVmOptions = {}): Promise<VmInstanceRecord> {
     validateImageName(image);
     const manifest = await this.images.readManifest(image, true);
+    if (path.extname(manifest.source.originalFileName).toLowerCase() === ".iso") {
+      throw new Error(
+        `VM image "${image}" was imported from installer ISO media (${manifest.source.originalFileName}), not an installed VM disk. Recreate it from a qcow2/raw/VHD/VHDX disk image.`
+      );
+    }
     const cpus = options.cpus ?? manifest.defaultCpus;
     const memoryMb = options.memoryMb ?? manifest.defaultMemoryMb;
     validateResources(cpus, memoryMb);

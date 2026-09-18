@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 const BOOLEAN_OPTIONS = new Set(['desktop', 'no-desktop', 'validate', 'no-validate', 'headless', 'help']);
-const VALUE_OPTIONS = new Set(['name', 'image', 'architecture', 'arch', 'cpus', 'memory', 'vm-home', 'qemu', 'qemu-img']);
+const VALUE_OPTIONS = new Set(['name', 'image', 'architecture', 'arch', 'cpus', 'memory', 'disk-size', 'vm-home', 'qemu', 'qemu-img']);
 
 function parseVmArgs(argv) {
   const out = { positional: [] };
@@ -119,14 +119,15 @@ Usage:
 
 Setup options:
   --name <name>              Approved image name.
-  --image <file>             Source disk image. It is imported; the source is never used directly.
+  --image <file>             Source disk image or installer ISO.
   --architecture <arch>      x86_64 or aarch64. Default: host architecture.
   --cpus <n>                 Default virtual CPUs.
   --memory <MiB>             Default memory in MiB.
+  --disk-size <GiB>          Target disk size for ISO installation. Default: 64 GiB.
   --vm-home <dir>            VM storage root. Setup remembers the selected location.
   --desktop                  Mark the image as providing a desktop environment.
   --validate                 Perform a bounded validation boot and QEMU Guest Agent probe.
-  --headless                 Never prompt; required values must be supplied.
+  --headless                 Never prompt; installer ISO input is not supported.
   --qemu <path>              Override qemu-system executable.
   --qemu-img <path>          Override qemu-img executable.
                               CODEXPRO_VM_HOME, CODEXPRO_QEMU, and CODEXPRO_QEMU_IMG are also supported.
@@ -138,11 +139,13 @@ async function setupCommand(runtime, args) {
   const hostArch = runtime.hostArchitecture();
   const defaultCpus = defaultCpuCount();
   const defaultMemory = 4096;
+  const defaultDiskSize = 64;
   let name = args.name;
   let image = args.image;
   let architecture = args.architecture ?? args.arch ?? hostArch;
   let cpus = args.cpus;
   let memory = args.memory;
+  let diskSize = args.diskSize;
   let vmHome = args.vmHome ?? runtime.configuredVmRoot() ?? runtime.vmHomeLayout().root;
   let desktop = args.desktop ?? false;
   let validate = args.validate ?? false;
@@ -164,6 +167,9 @@ async function setupCommand(runtime, args) {
       architecture = await ask(rl, 'Guest architecture', architecture);
       cpus = await ask(rl, 'Default CPU count', cpus ?? defaultCpus);
       memory = await ask(rl, 'Default memory (MiB)', memory ?? defaultMemory);
+      if (path.extname(expandUserPath(image)).toLowerCase() === '.iso') {
+        diskSize = await ask(rl, 'Installation disk size (GiB)', diskSize ?? defaultDiskSize);
+      }
       vmHome = await ask(rl, 'VM storage location', vmHome);
       desktop = await askBoolean(rl, 'Does this image provide a desktop environment?', desktop);
       validate = await askBoolean(rl, 'Perform a validation boot now?', validate);
@@ -175,7 +181,13 @@ async function setupCommand(runtime, args) {
   if (!name) throw new Error('--name is required.');
   if (!image) throw new Error('--image is required.');
 
+  const resolvedImage = path.resolve(expandUserPath(image));
+  const isInstallerIso = path.extname(resolvedImage).toLowerCase() === '.iso';
   const resolvedVmHome = path.resolve(expandUserPath(vmHome));
+  if (isInstallerIso && !args.headless) {
+    console.log('\nInstaller ISO detected. CodexPro will create a qcow2 disk and open QEMU.');
+    console.log('Complete the OS installation in the QEMU window, then shut the VM down to finish importing the disk.\n');
+  }
   const manager = new runtime.VmManager({
     vmRoot: resolvedVmHome,
     qemu: args.qemu,
@@ -185,12 +197,14 @@ async function setupCommand(runtime, args) {
   await runtime.saveConfiguredVmRoot(resolvedVmHome);
   const manifest = await manager.setupImage({
     name,
-    sourcePath: path.resolve(expandUserPath(image)),
+    sourcePath: resolvedImage,
     architecture: runtime.normalizeArchitecture(String(architecture)),
     cpus: positiveInteger(cpus, '--cpus', defaultCpus),
     memoryMb: positiveInteger(memory, '--memory', defaultMemory),
     desktop: Boolean(desktop),
-    validate: Boolean(validate)
+    validate: Boolean(validate),
+    diskSizeGb: positiveInteger(diskSize, '--disk-size', defaultDiskSize),
+    headless: Boolean(args.headless)
   });
 
   console.log(`VM image installed: ${manifest.name}`);
