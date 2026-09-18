@@ -20,6 +20,7 @@ import {
   parseImageManifest,
   qgaArguments,
   qmpArgument,
+  runQemuInstaller,
   runVmToolAction,
   saveConfiguredVmRoot,
   systemBinaryName,
@@ -241,7 +242,9 @@ try {
     cpus: 4,
     memoryMb: 8192,
     diskPath: 'E:/codexprovm/install-disk.qcow2',
-    isoPath: 'E:/isos/windows.iso'
+    isoPath: 'E:/isos/windows.iso',
+    qmp: { transport: 'pipe', name: 'codexpro-vm-0123456789abcdef-qmp' },
+    display: 'sdl'
   });
   assert.ok(installerArgs.join(' ').includes('ich9-ahci,id=codexpro-ahci'));
   assert.ok(installerArgs.join(' ').includes('ide-hd,drive=install-disk,bus=codexpro-ahci.0'));
@@ -249,6 +252,75 @@ try {
   assert.ok(installerArgs.join(' ').includes('windows.iso'));
   assert.ok(installerArgs.includes('once=d'));
   assert.ok(installerArgs.includes('user,model=e1000e'));
+  assert.equal(installerArgs[installerArgs.indexOf('-display') + 1], 'sdl');
+  assert.ok(installerArgs.includes('-qmp'));
+  assert.ok(installerArgs.includes('pipe:codexpro-vm-0123456789abcdef-qmp'));
+
+  const fakeQmpServer = path.join(root, 'fake-qmp-server.mjs');
+  await fs.writeFile(fakeQmpServer, String.raw`
+import net from 'node:net';
+const endpoint = JSON.parse(process.argv[2]);
+const mode = process.argv[3];
+const address = endpoint.transport === 'pipe' ? '\\\\.\\pipe\\' + endpoint.name : endpoint.path;
+let running = false;
+const server = net.createServer((socket) => {
+  socket.setEncoding('utf8');
+  socket.write(JSON.stringify({ QMP: { version: { qemu: { major: 11, minor: 1, micro: 0 }, package: '' }, capabilities: [] } }) + '\r\n');
+  let buffer = '';
+  socket.on('data', (chunk) => {
+    buffer += String(chunk);
+    for (;;) {
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      const message = JSON.parse(line);
+      if (message.execute === 'qmp_capabilities') {
+        socket.write(JSON.stringify({ return: {}, id: message.id }) + '\r\n');
+      } else if (message.execute === 'query-status') {
+        const status = mode === 'fatal' ? 'io-error' : running ? 'running' : 'prelaunch';
+        socket.write(JSON.stringify({ return: { running, status }, id: message.id }) + '\r\n');
+      } else if (message.execute === 'cont') {
+        running = true;
+        socket.write(JSON.stringify({ return: {}, id: message.id }) + '\r\n');
+        setTimeout(() => {
+          socket.end();
+          server.close(() => process.exit(0));
+        }, 150);
+      } else if (message.execute === 'quit') {
+        socket.write(JSON.stringify({ return: {}, id: message.id }) + '\r\n');
+        socket.end();
+        server.close(() => process.exit(0));
+      }
+    }
+  });
+});
+server.listen(address);
+`);
+
+  const resumableEndpoint = process.platform === 'win32'
+    ? { transport: 'pipe', name: 'codexpro-vm-1111111111111111-qmp' }
+    : { transport: 'unix', path: path.join(root, 'installer-resume.sock') };
+  await runQemuInstaller(
+    process.execPath,
+    [fakeQmpServer, JSON.stringify(resumableEndpoint), 'resume'],
+    path.join(root, 'installer-resume.log'),
+    resumableEndpoint
+  );
+
+  const fatalEndpoint = process.platform === 'win32'
+    ? { transport: 'pipe', name: 'codexpro-vm-2222222222222222-qmp' }
+    : { transport: 'unix', path: path.join(root, 'installer-fatal.sock') };
+  await assert.rejects(
+    () => runQemuInstaller(
+      process.execPath,
+      [fakeQmpServer, JSON.stringify(fatalEndpoint), 'fatal'],
+      path.join(root, 'installer-fatal.log'),
+      fatalEndpoint
+    ),
+    /non-resumable state: io-error/
+  );
 
   const pipeName = 'codexpro-vm-0123456789abcdef-qmp';
   assert.equal(qmpArgument({ transport: 'pipe', name: pipeName }), `pipe:${pipeName}`);

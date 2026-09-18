@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { connectQmpWithRetry } from "./qmp.js";
 import type { LocalChannelEndpoint, VmAccelerator, VmArchitecture } from "./types.js";
 
 export interface CommandResult {
@@ -243,6 +244,8 @@ export interface QemuInstallerOptions {
   memoryMb: number;
   diskPath: string;
   isoPath: string;
+  qmp: LocalChannelEndpoint;
+  display?: string;
 }
 
 export function buildQemuInstallerArgs(options: QemuInstallerOptions): string[] {
@@ -273,8 +276,10 @@ export function buildQemuInstallerArgs(options: QemuInstallerOptions): string[] 
     ...storageArgs,
     "-nic", options.architecture === "x86_64" ? "user,model=e1000e" : "user,model=virtio-net-pci",
     "-boot", "once=d",
+    ...(options.display ? ["-display", options.display] : []),
     "-serial", "none",
-    "-monitor", "none"
+    "-monitor", "none",
+    "-qmp", qmpArgument(options.qmp)
   ];
 }
 
@@ -296,15 +301,66 @@ export function startQemuProcess(
   }
 }
 
-export async function runQemuInstaller(binary: string, args: readonly string[], logPath: string): Promise<void> {
+const INSTALLER_RESUMABLE_STATES = new Set(["paused", "prelaunch"]);
+const INSTALLER_FATAL_STATES = new Set(["internal-error", "io-error", "guest-panicked", "watchdog"]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function runQemuInstaller(
+  binary: string,
+  args: readonly string[],
+  logPath: string,
+  qmpEndpoint: LocalChannelEndpoint
+): Promise<void> {
   const child = startQemuProcess(binary, args, logPath, { windowsHide: false });
-  await new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`QEMU installer exited ${signal ? `with signal ${signal}` : `with code ${String(code)}`}.`));
-    });
+  let spawnError: Error | undefined;
+  child.once("error", (error) => {
+    spawnError = error;
   });
+
+  const exitResult = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+
+  let qmp: Awaited<ReturnType<typeof connectQmpWithRetry>> | undefined;
+  try {
+    qmp = await connectQmpWithRetry(qmpEndpoint, 30_000, 5_000);
+    for (;;) {
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null) break;
+
+      try {
+        const status = await qmp.queryStatus(1_500);
+        if (INSTALLER_FATAL_STATES.has(status.status)) {
+          throw new Error(`QEMU installer entered non-resumable state: ${status.status}.`);
+        }
+        if (INSTALLER_RESUMABLE_STATES.has(status.status)) {
+          await qmp.continueRun(1_500);
+        }
+      } catch (error) {
+        if (child.exitCode !== null || child.signalCode !== null) break;
+        await sleep(250);
+        if (child.exitCode !== null || child.signalCode !== null) break;
+        throw error;
+      }
+      await sleep(500);
+    }
+
+    const { code, signal } = await exitResult;
+    if (code === 0) return;
+    throw new Error(`QEMU installer exited ${signal ? `with signal ${signal}` : `with code ${String(code)}`}.`);
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) {
+      await qmp?.quit(1_000).catch(() => {});
+      await Promise.race([exitResult, sleep(1_000)]);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    }
+    throw error;
+  } finally {
+    qmp?.close();
+  }
 }
 
 export async function readLogTail(logPath: string, maxBytes = 16_384): Promise<string> {

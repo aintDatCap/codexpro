@@ -168,6 +168,10 @@ export class QmpClient {
     return (await this.request("query-status", undefined, timeoutMs)) as QmpStatus;
   }
 
+  async continueRun(timeoutMs = 3_000): Promise<void> {
+    await this.request("cont", undefined, timeoutMs);
+  }
+
   async quit(timeoutMs = 3_000): Promise<void> {
     await this.request("quit", undefined, timeoutMs);
   }

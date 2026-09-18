@@ -56,6 +56,8 @@ For a normal disk image, CodexPro inspects it with `qemu-img`, converts it into 
 
 For an installer `.iso`, CodexPro creates a blank qcow2 disk (64 GiB by default, configurable with `--disk-size <GiB>`) and launches `qemu-system-*` with the ISO attached as read-only CD-ROM installation media. Complete the OS installer in the QEMU window and shut the guest down; CodexPro then imports the installed qcow2 disk into the normal immutable image store. Generic ISO installs are interactive, so `.iso` input is not supported with `--headless`.
 
+CodexPro supervises installer VMs through a private QMP channel. If QEMU enters the resumable `paused` or `prelaunch` states, CodexPro issues `cont` automatically. Non-resumable states such as `io-error`, `internal-error`, `guest-panicked`, or `watchdog` abort setup and include the QEMU log tail in the reported error instead of leaving an apparently frozen installer window. On Windows, installer VMs explicitly use QEMU's SDL display backend instead of the auto-selected GTK frontend, and QMP startup allows extra time for graphical/WHPX initialization.
+
 By default, managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/vm`), not in the project repository. A custom `--vm-home` or `CODEXPRO_VM_HOME` points directly at the VM storage root:
 
 ```text

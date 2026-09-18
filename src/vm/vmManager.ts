@@ -335,6 +335,9 @@ export class VmManager {
     await fsp.mkdir(stagingDir, { recursive: false, mode: 0o700 });
     const diskPath = path.join(stagingDir, "installed.qcow2");
     const logPath = path.join(stagingDir, "installer.log");
+    const installerQmp: LocalChannelEndpoint = process.platform === "win32"
+      ? { transport: "pipe", name: `codexpro-vm-${randomBytes(8).toString("hex")}-qmp` }
+      : { transport: "unix", path: path.join(stagingDir, "qmp.sock") };
     try {
       await createQcow2Disk(this.executor, qemuImg, diskPath, diskSizeGb);
       const args = buildQemuInstallerArgs({
@@ -344,10 +347,12 @@ export class VmManager {
         cpus: options.cpus,
         memoryMb: options.memoryMb,
         diskPath,
-        isoPath: sourcePath
+        isoPath: sourcePath,
+        qmp: installerQmp,
+        display: process.platform === "win32" ? "sdl" : undefined
       });
       try {
-        await runQemuInstaller(qemuSystem, args, logPath);
+        await runQemuInstaller(qemuSystem, args, logPath, installerQmp);
       } catch (error) {
         const log = await readLogTail(logPath);
         const detail = error instanceof Error ? error.message : String(error);
