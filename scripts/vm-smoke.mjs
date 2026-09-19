@@ -506,8 +506,13 @@ server.listen(address);
   );
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.ok(doctor.stdout.includes(`VM home               ${doctorVmHome}`));
-  assert.ok((await fs.stat(path.join(doctorVmHome, 'images'))).isDirectory());
-  assert.ok((await fs.stat(path.join(doctorVmHome, 'instances'))).isDirectory());
+  if (process.platform === 'win32') {
+    assert.match(doctor.stdout, /Hyper-V/);
+    await assert.rejects(fs.access(doctorVmHome)); // doctor is read-only
+  } else {
+    assert.ok((await fs.stat(path.join(doctorVmHome, 'images'))).isDirectory());
+    assert.ok((await fs.stat(path.join(doctorVmHome, 'instances'))).isDirectory());
+  }
 
   const missingImage = spawnSync(
     process.execPath,

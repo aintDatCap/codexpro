@@ -12,14 +12,8 @@ import {
   type VmImageValidation
 } from "./types.js";
 import { ensureVmLayout, vmHomeLayout, type VmHomeLayout } from "./vmHome.js";
-import {
-  checkQcow2,
-  convertImageToQcow2,
-  inspectImage,
-  nodeCommandExecutor,
-  type CommandExecutor
-} from "./qemu.js";
-
+import { nodeCommandExecutor, type CommandExecutor } from "./command.js";
+import type { DiskImporter } from "./backends/backend.js";
 export interface ImportImageOptions {
   name: string;
   sourcePath: string;
@@ -29,7 +23,8 @@ export interface ImportImageOptions {
   defaultMemoryMb: number;
   desktop: boolean;
   preferredAccelerator?: VmAccelerator;
-  qemuImg: string;
+  qemuImg?: string;
+  importer?: DiskImporter;
 }
 
 export interface ImageStoreOptions {
@@ -85,8 +80,8 @@ export class ImageStore {
     return path.join(this.layout.images, validateImageName(name));
   }
 
-  basePath(name: string): string {
-    return path.join(this.imageDir(name), "base.qcow2");
+  basePath(name: string, format: "qcow2" | "vhdx" = "qcow2"): string {
+    return path.join(this.imageDir(name), `base.${format}`);
   }
 
   manifestPath(name: string): string {
@@ -109,32 +104,16 @@ export class ImageStore {
       throw new Error("Installer ISO files must be handled through the CodexPro VM setup flow.");
     }
 
-    const sourceInfo = await inspectImage(this.executor, options.qemuImg, sourcePath);
-    if (sourceInfo["backing-filename"]) {
-      throw new Error(
-        "The source VM image uses an external backing file. Flatten it into a standalone image outside CodexPro before importing; CodexPro will not follow image-supplied host paths."
-      );
-    }
-    const virtualSize = Number(sourceInfo["virtual-size"]);
-    if (!Number.isSafeInteger(virtualSize) || virtualSize <= 0) {
-      throw new Error("qemu-img did not report a valid virtual size for the source image.");
-    }
-
+    const importer = options.importer ?? (await import("./backends/qemu/disk.js")).qemuDiskImporter(this.executor, options.qemuImg ?? "qemu-img");
     const stagingDir = path.join(
       layout.images,
       `.import-${name}-${process.pid}-${randomBytes(8).toString("hex")}`
     );
     await fsp.mkdir(stagingDir, { recursive: false, mode: 0o700 });
-    const stagingBase = path.join(stagingDir, "base.qcow2");
+    const stagingBase = path.join(stagingDir, `base.${importer.format}`);
 
     try {
-      await convertImageToQcow2(this.executor, options.qemuImg, sourcePath, stagingBase);
-      const importedInfo = await inspectImage(this.executor, options.qemuImg, stagingBase);
-      if (importedInfo.format !== "qcow2") throw new Error("Imported VM base is not qcow2.");
-      if (importedInfo["backing-filename"]) {
-        throw new Error("Imported VM base unexpectedly retained a backing file; registration aborted.");
-      }
-      await checkQcow2(this.executor, options.qemuImg, stagingBase);
+      const virtualSize = await importer.prepare(sourcePath, stagingBase);
       const stat = await fsp.stat(stagingBase);
       if (!stat.isFile() || stat.size <= 0) throw new Error("Imported VM base is empty or invalid.");
       const sha256 = await sha256File(stagingBase);
@@ -147,10 +126,11 @@ export class ImageStore {
       }
 
       const manifest: VmImageManifest = {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        backend: importer.backend,
         name,
         architecture: options.architecture,
-        format: "qcow2",
+        format: importer.format,
         sha256,
         virtualSize,
         fileSize: stat.size,
@@ -202,9 +182,9 @@ export class ImageStore {
     const manifest = parseImageManifest(parsed);
     if (manifest.name !== name) throw new Error(`VM image manifest name mismatch for "${name}".`);
 
-    const base = this.basePath(name);
+    const base = this.basePath(name, manifest.format);
     const stat = await fsp.lstat(base).catch(() => undefined);
-    if (!stat?.isFile() || stat.isSymbolicLink()) throw new Error(`VM image "${name}" has no valid managed base.qcow2.`);
+    if (!stat?.isFile() || stat.isSymbolicLink()) throw new Error(`VM image "${name}" has no valid managed base disk.`);
     if (stat.size !== manifest.fileSize) {
       throw new Error(`VM image "${name}" base file size no longer matches its manifest.`);
     }

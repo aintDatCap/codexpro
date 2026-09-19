@@ -1,3 +1,4 @@
+export type VmBackendKind = "qemu" | "hyperv";
 export type VmArchitecture = "x86_64" | "aarch64";
 export type VmAccelerator = "whpx" | "kvm" | "hvf" | "tcg";
 export type VmInstanceState = "created" | "starting" | "running" | "stopped" | "failed";
@@ -13,10 +14,11 @@ export interface VmImageValidation {
 }
 
 export interface VmImageManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  backend?: VmBackendKind;
   name: string;
   architecture: VmArchitecture;
-  format: "qcow2";
+  format: "qcow2" | "vhdx";
   sha256: string;
   virtualSize: number;
   fileSize: number;
@@ -32,7 +34,8 @@ export interface VmImageManifest {
 }
 
 export interface VmInstanceRecord {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  backend?: VmBackendKind;
   id: string;
   image: string;
   createdAt: string;
@@ -40,7 +43,8 @@ export interface VmInstanceRecord {
   state: VmInstanceState;
   cpus: number;
   memoryMb: number;
-  accelerator: VmAccelerator;
+  accelerator?: VmAccelerator;
+  hyperv?: { ownershipId: string; vmId?: string };
   desktop: boolean;
   processId?: number;
   instanceDir: string;
@@ -49,8 +53,8 @@ export interface VmInstanceRecord {
   lastError?: string;
 }
 
-export const VM_MANIFEST_SCHEMA_VERSION = 1 as const;
-export const VM_INSTANCE_SCHEMA_VERSION = 1 as const;
+export const VM_MANIFEST_SCHEMA_VERSION = 2 as const;
+export const VM_INSTANCE_SCHEMA_VERSION = 2 as const;
 export const VM_MIN_CPUS = 1;
 export const VM_MAX_CPUS = 64;
 export const VM_MIN_MEMORY_MB = 256;
@@ -120,12 +124,14 @@ export function validateResources(cpus: number, memoryMb: number): { cpus: numbe
 
 export function parseImageManifest(value: unknown): VmImageManifest {
   const input = record(value, "VM image manifest");
-  if (input.schemaVersion !== VM_MANIFEST_SCHEMA_VERSION) {
+  if (input.schemaVersion !== 1 && input.schemaVersion !== VM_MANIFEST_SCHEMA_VERSION) {
     throw new Error(`Unsupported VM image manifest schemaVersion: ${String(input.schemaVersion)}`);
   }
   const name = validateImageName(requiredString(input.name, "manifest.name"));
   const architecture = normalizeArchitecture(requiredString(input.architecture, "manifest.architecture"));
-  if (input.format !== "qcow2") throw new Error("manifest.format must be qcow2.");
+  const backend = parseBackend(input);
+  if (input.format !== (backend === "qemu" ? "qcow2" : "vhdx")) throw new Error("manifest.format does not match backend.");
+  if (backend === "hyperv" && architecture !== "x86_64") throw new Error("Hyper-V requires x86_64.");
   const sha256 = requiredString(input.sha256, "manifest.sha256");
   if (!SHA256_RE.test(sha256)) throw new Error("manifest.sha256 must be a lowercase SHA-256 digest.");
   const virtualSize = requiredInteger(input.virtualSize, "manifest.virtualSize");
@@ -136,6 +142,7 @@ export function parseImageManifest(value: unknown): VmImageManifest {
   validateResources(defaultCpus, defaultMemoryMb);
   const desktop = requiredBoolean(input.desktop, "manifest.desktop");
   let preferredAccelerator: VmAccelerator | undefined;
+  if (backend === "hyperv" && input.preferredAccelerator !== undefined) throw new Error("Hyper-V does not use QEMU accelerators.");
   if (input.preferredAccelerator !== undefined) {
     preferredAccelerator = requiredString(input.preferredAccelerator, "manifest.preferredAccelerator") as VmAccelerator;
     if (!["whpx", "kvm", "hvf", "tcg"].includes(preferredAccelerator)) {
@@ -152,10 +159,11 @@ export function parseImageManifest(value: unknown): VmImageManifest {
   const validation = record(input.validation, "manifest.validation");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: input.schemaVersion as 1 | 2,
+    backend,
     name,
     architecture,
-    format: "qcow2",
+    format: input.format as "qcow2" | "vhdx",
     sha256,
     virtualSize,
     fileSize,
@@ -196,7 +204,7 @@ function parseEndpoint(value: unknown, label: string): LocalChannelEndpoint {
 
 export function parseInstanceRecord(value: unknown): VmInstanceRecord {
   const input = record(value, "VM instance record");
-  if (input.schemaVersion !== VM_INSTANCE_SCHEMA_VERSION) {
+  if (input.schemaVersion !== 1 && input.schemaVersion !== VM_INSTANCE_SCHEMA_VERSION) {
     throw new Error(`Unsupported VM instance schemaVersion: ${String(input.schemaVersion)}`);
   }
   const id = validateInstanceId(requiredString(input.id, "instance.id"));
@@ -213,13 +221,15 @@ export function parseInstanceRecord(value: unknown): VmInstanceRecord {
   const cpus = requiredInteger(input.cpus, "instance.cpus");
   const memoryMb = requiredInteger(input.memoryMb, "instance.memoryMb");
   validateResources(cpus, memoryMb);
-  const accelerator = requiredString(input.accelerator, "instance.accelerator") as VmAccelerator;
-  if (!["whpx", "kvm", "hvf", "tcg"].includes(accelerator)) throw new Error(`Invalid VM accelerator: ${accelerator}`);
+  const backend = parseBackend(input);
+  const accelerator = backend === "qemu" ? requiredString(input.accelerator, "instance.accelerator") as VmAccelerator : undefined;
+  if (accelerator && !["whpx", "kvm", "hvf", "tcg"].includes(accelerator)) throw new Error(`Invalid VM accelerator: ${accelerator}`);
   const desktop = requiredBoolean(input.desktop, "instance.desktop");
   const instanceDir = requiredString(input.instanceDir, "instance.instanceDir");
 
   const result: VmInstanceRecord = {
-    schemaVersion: 1,
+    schemaVersion: input.schemaVersion as 1 | 2,
+    backend,
     id,
     image,
     createdAt,
@@ -231,6 +241,14 @@ export function parseInstanceRecord(value: unknown): VmInstanceRecord {
     desktop,
     instanceDir
   };
+  if (backend === "hyperv") {
+    if (["accelerator", "processId", "qmp", "qga"].some(key => input[key] !== undefined)) throw new Error("Hyper-V record contains QEMU runtime fields.");
+    const hv = record(input.hyperv, "instance.hyperv");
+    const ownershipId = requiredString(hv.ownershipId, "hyperv.ownershipId");
+    if (!/^[a-f0-9]{64}$/.test(ownershipId)) throw new Error("Invalid Hyper-V ownership identifier.");
+    const vmId = hv.vmId === undefined ? undefined : validateVmGuid(hv.vmId);
+    result.hyperv = { ownershipId, ...(vmId ? { vmId } : {}) };
+  } else if (input.hyperv !== undefined) throw new Error("QEMU record contains Hyper-V metadata.");
   if (input.processId !== undefined) {
     const processId = requiredInteger(input.processId, "instance.processId");
     if (processId <= 0) throw new Error("instance.processId must be positive.");
@@ -240,4 +258,18 @@ export function parseInstanceRecord(value: unknown): VmInstanceRecord {
   if (input.qga !== undefined) result.qga = parseEndpoint(input.qga, "instance.qga");
   if (input.lastError !== undefined) result.lastError = requiredString(input.lastError, "instance.lastError");
   return result;
+}
+
+function parseBackend(input: Record<string, unknown>): VmBackendKind {
+  if (input.schemaVersion === 1) {
+    if (input.backend !== undefined && input.backend !== "qemu") throw new Error("Schema 1 only supports QEMU.");
+    return "qemu";
+  }
+  if (input.backend !== "qemu" && input.backend !== "hyperv") throw new Error("Schema 2 requires an explicit backend.");
+  return input.backend;
+}
+
+export function validateVmGuid(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value)) throw new Error("Invalid Hyper-V VM GUID.");
+  return value.toLowerCase();
 }

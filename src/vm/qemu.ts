@@ -1,47 +1,13 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { connectQmpWithRetry, QmpCommandTimeoutError, QmpConnectionError } from "./qmp.js";
 import type { LocalChannelEndpoint, VmAccelerator, VmArchitecture } from "./types.js";
 
-export interface CommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-export interface CommandExecutor {
-  run(command: string, args: readonly string[], options?: { timeoutMs?: number; cwd?: string }): Promise<CommandResult>;
-}
-
-export const nodeCommandExecutor: CommandExecutor = {
-  run(command, args, options = {}) {
-    return new Promise((resolve, reject) => {
-      execFile(
-        command,
-        [...args],
-        {
-          cwd: options.cwd,
-          timeout: options.timeoutMs ?? 10_000,
-          windowsHide: true,
-          encoding: "utf8",
-          maxBuffer: 4 * 1024 * 1024
-        },
-        (error, stdout, stderr) => {
-          const errorCode = error?.code;
-          const exitCode = typeof errorCode === "number" ? errorCode : error ? 1 : 0;
-          if (errorCode === "ENOENT") {
-            reject(new Error(`Executable not found: ${command}`));
-            return;
-          }
-          resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), exitCode });
-        }
-      );
-    });
-  }
-};
+export { nodeCommandExecutor, type CommandExecutor, type CommandResult } from "./command.js";
+import type { CommandExecutor } from "./command.js";
 
 function executableExtensions(): string[] {
   if (process.platform !== "win32") return [""];

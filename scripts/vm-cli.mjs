@@ -105,7 +105,7 @@ async function loadVmRuntime(projectRoot) {
 }
 
 export function vmUsage() {
-  console.log(`CodexPro QEMU VM runtime
+  console.log(`CodexPro VM runtime (Windows: Hyper-V; Linux: QEMU/KVM; macOS: QEMU/HVF)
 
 Usage:
   codexpro vm setup
@@ -126,12 +126,14 @@ Setup options:
   --disk-size <GiB>          Target disk size for ISO installation. Default: 64 GiB.
   --vm-home <dir>            VM storage root. Setup remembers the selected location.
   --desktop                  Mark the image as providing a desktop environment.
-  --validate                 Perform a bounded validation boot and QEMU Guest Agent probe.
+  --validate                 Perform a bounded validation boot (QGA probe on QEMU only).
   --headless                 Never prompt; installer ISO input is not supported.
-  --qemu <path>              Override qemu-system executable.
-  --qemu-img <path>          Override qemu-img executable.
+  --qemu <path>              Override qemu-system executable (Linux/macOS only).
+  --qemu-img <path>          Override qemu-img executable (Linux/macOS only).
                               CODEXPRO_VM_HOME, CODEXPRO_QEMU, and CODEXPRO_QEMU_IMG are also supported.
 
+Windows requires Hyper-V and its management tools; VHD/VHDX and interactive ISO are supported.
+CodexPro never enables Hyper-V automatically.
 CodexPro never downloads or installs QEMU automatically.`);
 }
 
@@ -158,8 +160,8 @@ async function setupCommand(runtime, args) {
 
   if (needsRequired) {
     console.log('CodexPro VM setup');
-    console.log('This wizard imports a private immutable qcow2 base image into the VM storage directory.');
-    console.log('Press Enter to accept defaults. QEMU must already be installed.\n');
+    console.log('This wizard imports a private immutable base image (VHDX on Windows, qcow2 on Linux/macOS) into the VM storage directory.');
+    console.log('Press Enter to accept defaults. Run vm doctor to check the native backend prerequisites.\n');
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       name = await ask(rl, 'Image name', name ?? '');
@@ -185,8 +187,8 @@ async function setupCommand(runtime, args) {
   const isInstallerIso = path.extname(resolvedImage).toLowerCase() === '.iso';
   const resolvedVmHome = path.resolve(expandUserPath(vmHome));
   if (isInstallerIso && !args.headless) {
-    console.log('\nInstaller ISO detected. CodexPro will create a qcow2 disk and open QEMU.');
-    console.log('Complete the OS installation in the QEMU window, then shut the VM down to finish importing the disk.\n');
+    console.log('\nInstaller ISO detected. CodexPro will create a blank disk and open the native VM console.');
+    console.log('Complete the OS installation in the VM console, then shut the VM down to finish importing the disk.\n');
   }
   const manager = new runtime.VmManager({
     vmRoot: resolvedVmHome,
@@ -211,13 +213,14 @@ async function setupCommand(runtime, args) {
   console.log(`VM image installed: ${manifest.name}`);
   console.log(`VM storage            ${resolvedVmHome}`);
   console.log(`Architecture          ${manifest.architecture}`);
+  console.log(`Backend / format      ${manifest.backend ?? 'qemu'} / ${manifest.format}`);
   console.log(`Virtual size          ${humanBytes(manifest.virtualSize)}`);
   console.log(`Default resources     ${manifest.defaultCpus} CPU / ${manifest.defaultMemoryMb} MiB`);
   console.log(`Desktop               ${manifest.desktop ? 'yes' : 'no'}`);
   if (manifest.preferredAccelerator) console.log(`Preferred accelerator  ${manifest.preferredAccelerator}`);
   if (validate) {
     console.log(`Boot validation        ${manifest.validation.bootTested ? '✓' : '✗'}`);
-    console.log(`QEMU Guest Agent       ${manifest.validation.guestAgentAvailable ? '✓' : '✗'}`);
+    console.log(`Guest control          ${manifest.validation.guestAgentAvailable ? '✓' : '✗'}`);
     if (!manifest.validation.guestAgentAvailable) console.log('AI command execution   unavailable');
   } else {
     console.log('Boot validation        not requested');
@@ -231,9 +234,9 @@ function printImages(runtime, manifests) {
   }
   for (const manifest of manifests) {
     const image = runtime.publicVmImage(manifest);
-    const compatibility = image.validation.guestAgentAvailable ? 'CodexPro-compatible' : image.validation.bootTested ? 'boot-tested; QGA unavailable' : 'not validated';
+    const compatibility = image.validation.guestAgentAvailable ? 'CodexPro-compatible' : image.validation.bootTested ? 'boot-tested; guest control unavailable' : 'not validated';
     console.log(
-      `${image.name}\t${image.architecture}\t${image.defaultCpus} CPU\t${image.defaultMemoryMb} MiB\t${compatibility}`
+      `${image.name}\t${image.architecture}\t${image.defaultCpus} CPU\t${image.defaultMemoryMb} MiB\t${image.backend}/${image.format}\t${compatibility}`
     );
   }
 }
@@ -246,7 +249,7 @@ function printInstances(runtime, records) {
   for (const record of records) {
     const instance = runtime.publicVmInstance(record);
     console.log(
-      `${instance.id}\t${instance.state}\t${instance.image}\t${instance.cpus} CPU\t${instance.memoryMb} MiB\t${instance.accelerator}`
+      `${instance.id}\t${instance.state}\t${instance.image}\t${instance.cpus} CPU\t${instance.memoryMb} MiB\t${instance.accelerator ?? instance.backend}`
     );
   }
 }
@@ -255,6 +258,16 @@ async function doctorCommand(runtime, manager, args) {
   const architecture = runtime.normalizeArchitecture(String(args.architecture ?? args.arch ?? runtime.hostArchitecture()));
   const report = await manager.doctor(architecture);
   console.log('CodexPro VM doctor');
+  if (report.backend === 'hyperv') {
+    console.log('Backend               Hyper-V');
+    console.log(`Ready                 ${report.ready ? 'yes' : 'no'}`);
+    for (const [name, ok] of Object.entries(report.checks ?? {})) console.log(`${name.padEnd(22)}${ok ? 'yes' : 'no'}`);
+    console.log(`VM home               ${report.vmHome}`);
+    console.log(`Installed images      ${report.imageCount}`);
+    console.log(`Active instances      ${report.activeInstanceCount}`);
+    for (const issue of report.issues ?? []) console.log(`- ${issue}`);
+    return;
+  }
   console.log(`QEMU system binary    ${report.qemuSystem ? '✓ ' + report.qemuSystem : '✗ not found'}`);
   if (report.qemuSystemVersion) console.log(`QEMU system version   ${report.qemuSystemVersion}`);
   console.log(`qemu-img              ${report.qemuImg ? '✓ ' + report.qemuImg : '✗ not found'}`);
@@ -326,7 +339,8 @@ export async function runVmCli(argv, projectRoot) {
     console.log(`Image                 ${instance.image}`);
     console.log(`State                 ${instance.state}`);
     console.log(`Resources             ${instance.cpus} CPU / ${instance.memoryMb} MiB`);
-    console.log(`Accelerator           ${instance.accelerator}`);
+    console.log(`Backend               ${instance.backend}`);
+    if (instance.accelerator) console.log(`Accelerator           ${instance.accelerator}`);
     return;
   }
   if (command === 'destroy') {

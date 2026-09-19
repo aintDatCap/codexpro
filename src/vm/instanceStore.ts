@@ -91,10 +91,11 @@ export class InstanceStore {
     image: string,
     cpus: number,
     memoryMb: number,
-    accelerator: VmAccelerator,
+    accelerator: VmAccelerator | undefined,
     desktop: boolean,
     qmp?: LocalChannelEndpoint,
-    qga?: LocalChannelEndpoint
+    qga?: LocalChannelEndpoint,
+    hyperv?: VmInstanceRecord["hyperv"]
   ): Promise<InstanceAllocation> {
     validateImageName(image);
     validateResources(cpus, memoryMb);
@@ -111,7 +112,9 @@ export class InstanceStore {
       }
       const now = new Date().toISOString();
       const record: VmInstanceRecord = {
-        schemaVersion: 1,
+        schemaVersion: 2,
+        backend: hyperv ? "hyperv" : "qemu",
+        ...(hyperv ? { hyperv } : {}),
         id,
         image,
         createdAt: now,
@@ -160,7 +163,7 @@ export class InstanceStore {
 
   async update(
     id: string,
-    patch: Partial<Pick<VmInstanceRecord, "state" | "processId" | "qmp" | "qga" | "lastError">>
+    patch: Partial<Pick<VmInstanceRecord, "state" | "processId" | "qmp" | "qga" | "lastError" | "hyperv">>
   ): Promise<VmInstanceRecord> {
     const current = await this.read(id);
     const next: VmInstanceRecord = {
@@ -198,6 +201,7 @@ export class InstanceStore {
     const record = parseInstanceRecord(value);
     if (record.id !== id) throw new Error(`VM instance id mismatch for "${id}".`);
     this.assertRecordOwnership(record);
+    if (record.backend === "hyperv") return record;
     if ((record.state === "starting" || record.state === "running") && !record.processId) {
       const pidText = await fsp.readFile(this.pidPath(id), "utf8").catch(() => "");
       const recoveredPid = Number(pidText.trim());

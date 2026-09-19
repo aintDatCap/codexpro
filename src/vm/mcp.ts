@@ -38,6 +38,6 @@ export async function runVmToolAction(
     }
     throw new Error("Unsupported VM action.");
   } catch (error) {
-    throw new Error(redactVmHostPaths(error));
+    throw new Error(redactVmHostPaths(error, undefined, manager.vmHome()));
   }
 }

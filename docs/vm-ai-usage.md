@@ -1,6 +1,6 @@
 # VM usage for AI agents
 
-CodexPro's VM runtime provides disposable QEMU guests for testing software. Treat it as a separate execution environment from the host repository.
+CodexPro provides disposable guests for testing software: **Windows: Hyper-V; Linux: QEMU/KVM; macOS: QEMU/HVF**. Treat a VM as a separate execution environment from the host repository. Images and instances expose their backend; Windows requires VHDX bases and uses disposable differencing disks. Legacy QEMU images remain readable but need human re-import into a native Windows format before Windows execution.
 
 ## Rules
 
@@ -14,7 +14,7 @@ CodexPro's VM runtime provides disposable QEMU guests for testing software. Trea
 8. Never attempt to modify the immutable base image or commit an overlay into it.
 9. Destroy disposable instances when they are no longer needed.
 10. State clearly whether evidence came from host tools or from a VM.
-11. If QEMU Guest Agent is unavailable, do not claim commands or file operations were executed in the guest.
+11. Guest commands and file operations are not exposed on either backend. QGA readiness is QEMU-specific and does not itself prove guest execution. Hyper-V lifecycle needs neither QGA nor PowerShell Direct.
 12. If hardware acceleration is unavailable, report that condition instead of pretending the VM ran or silently requesting software emulation.
 
 VMs improve isolation, but they do not make every unsafe action safe. Continue to minimize privileges, network exposure, and destructive behavior.
@@ -39,7 +39,9 @@ The AI-facing tool is intentionally one bounded `vm` tool:
 { "action": "destroy", "id": "vm-0123456789abcdef" }
 ```
 
-It does not accept image-import paths, arbitrary host filesystem deletion targets, or raw QMP commands. Guest `exec` is not exposed in this version.
+It does not accept image-import paths, arbitrary host deletion targets, raw QMP commands or arbitrary PowerShell. Guest `exec` is not exposed. Hyper-V verifies the persisted VM GUID and ownership token before destruction; if verification fails, report the error and preserve state instead of guessing from a VM display name.
+
+Hyper-V networking is disconnected by default. Never assume internet/LAN access or automatically connect an external switch. QEMU retains user-mode networking. Neither backend automatically mounts the workspace or injects secrets. Failed Hyper-V setup/start can retain diagnostic disks and runtime metadata; cleanup errors explicitly say if a VM may remain running. Report this to the human.
 
 ## Recommended workflow
 
@@ -66,7 +68,7 @@ Host bash:
 VM execution:
     disposable OS-level guest environment
     immutable base + per-instance overlay
-    separate local QMP/QGA management channels
+    backend-specific management (Hyper-V PowerShell or local QMP/QGA)
 ```
 
 A VM instance can be useful even before guest command execution is exposed for manual validation and lifecycle testing, but its mere existence is not evidence that software was executed successfully inside the guest.

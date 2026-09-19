@@ -171,7 +171,7 @@ Tool results are bounded before reaching ChatGPT's subcall inspector, whether to
 - Blocked paths cover `.env`, keys, `.git`, build caches, and similar
 - Attachment import only accepts ChatGPT Apps SDK file objects from approved HTTPS hosts
 - Host file/bash tools remain a local developer bridge, not an OS sandbox.
-- Optional QEMU VM runtimes provide separate disposable guest environments with immutable bases and per-instance overlays.
+- Optional VM runtimes (Windows Hyper-V, Linux QEMU/KVM, macOS QEMU/HVF) provide separate disposable guest environments with immutable bases and per-instance overlays.
 - VM isolation improves the testing boundary but does not make arbitrary code universally safe.
 
 Read [SECURITY.md](SECURITY.md) before exposing a tunnel.
@@ -245,7 +245,7 @@ npm run release:publish
 - [Website](https://rebel0789.github.io/codexpro/)
 - [FAQ](FAQ.md)
 - [Research workflow feedback, fixes, and output paging](docs/research-feedback.md)
-- [QEMU VM runtimes](docs/vm.md)
+- [VM runtimes](docs/vm.md)
 - [VM usage for AI agents](docs/vm-ai-usage.md)
 - [Security](SECURITY.md)
 - [Stable URL guide](DOMAIN_SETUP.md)

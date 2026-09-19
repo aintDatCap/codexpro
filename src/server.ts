@@ -582,7 +582,7 @@ function serverInstructions(config: CodexProConfig): string {
       : "5. Bash is available for normal local development commands. In safe mode catastrophic filesystem/system/destructive-Git patterns are blocked; prefer structured Git/file tools where practical.";
   const vmInstruction =
     !config.connectionTest && config.toolMode !== "minimal"
-      ? "VM runtime: the vm tool may list human-approved images and create/status/destroy disposable QEMU instances. It cannot import images or execute guest commands in this release. Keep host and guest evidence separate, never assume host secrets exist in a guest, and do not claim guest execution unless a future guest-execution tool returns evidence."
+      ? "VM runtime: the vm tool may list human-approved images and create/status/destroy disposable platform-native VM instances. It cannot import images or execute guest commands in this release. Keep host and guest evidence separate, never assume host secrets exist in a guest, and do not claim guest execution unless a future guest-execution tool returns evidence."
       : "";
 
   return [
@@ -1270,7 +1270,7 @@ export function createCodexProServer(config: CodexProConfig, knownWorkspaceRoots
     {
       title: "Disposable VM",
       description:
-        "Use human-approved QEMU images as disposable isolated test environments. Actions: images, create, status, destroy. This tool cannot import images, expose host paths, run arbitrary QMP, or execute guest commands.",
+        "Use human-approved VM images as disposable isolated test environments. Actions: images, create, status, destroy. This tool cannot import images, expose host paths, run arbitrary QMP, or execute guest commands.",
       inputSchema: {
         action: z.enum(["images", "create", "status", "destroy"]),
         image: z.string().max(80).optional(),
