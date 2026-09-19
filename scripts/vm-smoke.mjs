@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import net from 'node:net';
+import { QmpClient, QmpCommandTimeoutError, QmpConnectionError } from '../dist/vm/qmp.js';
 import {
   ImageStore,
   InstanceStore,
@@ -34,6 +36,42 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-vm-smoke-'));
 const home = path.join(root, 'home');
 
 try {
+  // A late response to an expired ID must not settle the next request.
+  let requests = 0;
+  const delayedServer = net.createServer((socket) => {
+    socket.write(JSON.stringify({ QMP: {} }) + '\n');
+    let buffer = '';
+    socket.on('data', chunk => {
+      buffer += chunk;
+      while (buffer.includes('\n')) {
+        const newline = buffer.indexOf('\n');
+        const message = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        const reply = value => socket.write(JSON.stringify({ id: message.id, return: value }) + '\n');
+        if (message.execute === 'qmp_capabilities') reply({});
+        else {
+          requests++;
+          if (requests === 3) { socket.end(); continue; }
+          const first = requests === 1;
+          setTimeout(() => reply({ status: first ? 'io-error' : 'running', requestId: message.id }), first ? 100 : 200);
+        }
+      }
+    });
+  });
+  await new Promise(resolve => delayedServer.listen(0, '127.0.0.1', resolve));
+  const delayedClient = await QmpClient.connect({ transport: 'tcp', host: '127.0.0.1', port: delayedServer.address().port });
+  try {
+    await assert.rejects(delayedClient.queryStatus(20), QmpCommandTimeoutError);
+    const recovered = await delayedClient.queryStatus(1000);
+    assert.equal(recovered.requestId, 3);
+    assert.equal(recovered.status, 'running');
+    await assert.rejects(delayedClient.queryStatus(1000), QmpConnectionError);
+    await assert.rejects(delayedClient.queryStatus(1000), QmpConnectionError);
+  } finally {
+    delayedClient.close();
+    await new Promise(resolve => delayedServer.close(resolve));
+  }
+
   assert.equal(acceleratorForPlatform('win32'), 'whpx');
   assert.equal(acceleratorForPlatform('linux'), 'kvm');
   assert.equal(acceleratorForPlatform('darwin'), 'hvf');
@@ -283,6 +321,7 @@ const mode = process.argv[3];
 const address = endpoint.transport === 'pipe' ? '\\\\.\\pipe\\' + endpoint.name : endpoint.path;
 if (mode === 'whpx') console.error('qemu-system-x86_64.EXE: WHPX: Unexpected VP exit code 4');
 let running = false;
+let queries = 0;
 const server = net.createServer((socket) => {
   socket.setEncoding('utf8');
   socket.write(JSON.stringify({ QMP: { version: { qemu: { major: 11, minor: 1, micro: 0 }, package: '' }, capabilities: [] } }) + '\r\n');
@@ -299,7 +338,20 @@ const server = net.createServer((socket) => {
       if (message.execute === 'qmp_capabilities') {
         socket.write(JSON.stringify({ return: {}, id: message.id }) + '\r\n');
       } else if (message.execute === 'query-status') {
-        const status = mode === 'fatal' ? 'io-error' : running ? 'running' : 'prelaunch';
+        queries++;
+        if (mode === 'stuck') continue;
+        if (mode === 'exit') process.exit(7);
+        if (mode === 'clean-exit') process.exit(0);
+        if (mode === 'disconnect' && queries === 1) { socket.destroy(); continue; }
+        if (mode === 'command-error') {
+          socket.write(JSON.stringify({ error: { class: 'GenericError', desc: 'deliberate failure' }, id: message.id }) + '\r\n');
+          continue;
+        }
+        if (mode === 'transient' && queries === 1) {
+          setTimeout(() => socket.write(JSON.stringify({ return: { status: 'running' }, id: message.id }) + '\r\n'), 6500);
+          continue;
+        }
+        const status = mode === 'fatal' ? 'io-error' : mode.startsWith('fatal:') ? mode.slice(6) : running ? 'running' : 'prelaunch';
         socket.write(JSON.stringify({ return: { running, status }, id: message.id }) + '\r\n');
       } else if (message.execute === 'cont') {
         running = true;
@@ -328,6 +380,38 @@ server.listen(address);
     path.join(root, 'installer-resume.log'),
     resumableEndpoint
   );
+
+  const transientEndpoint = process.platform === 'win32'
+    ? { transport: 'pipe', name: `codexpro-transient-${process.pid}` }
+    : { transport: 'unix', path: path.join(root, 'transient.sock') };
+  await runQemuInstaller(
+    process.execPath,
+    [fakeQmpServer, JSON.stringify(transientEndpoint), 'transient'],
+    path.join(root, 'installer-transient.log'),
+    transientEndpoint,
+    'tcg'
+  );
+  for (const mode of ['disconnect', 'clean-exit', 'exit', 'command-error', 'fatal:internal-error', 'fatal:guest-panicked', 'fatal:watchdog', 'stuck']) {
+    const endpoint = process.platform === 'win32'
+      ? { transport: 'pipe', name: `codexpro-${process.pid}-${mode.replace(':', '-')}` }
+      : { transport: 'unix', path: path.join(root, `${mode.replace(':', '-')}.sock`) };
+    const began = Date.now();
+    const run = () => runQemuInstaller(process.execPath, [fakeQmpServer, JSON.stringify(endpoint), mode], path.join(root, `${mode.replace(':', '-')}.log`), endpoint, 'tcg');
+    if (mode === 'exit') await assert.rejects(run, /exited with code 7/);
+    else if (mode === 'command-error') await assert.rejects(run, /deliberate failure/);
+    else if (mode.startsWith('fatal:')) await assert.rejects(run, /non-resumable state/);
+    else if (mode === 'stuck') {
+      await assert.rejects(run, /QMP remained unresponsive for 60000 ms/);
+      assert.ok(Date.now() - began < 70000, 'Unresponsive supervision must have a bounded deadline');
+    } else await run();
+    if (mode === 'exit' || mode === 'clean-exit') assert.ok(Date.now() - began < 5000, 'Exit should interrupt an outstanding QMP query');
+  }
+  // Hardware accelerators keep the existing fast command timeout.
+  const hardwareBegan = Date.now();
+  await assert.rejects(() => runQemuInstaller(process.execPath,
+    [fakeQmpServer, JSON.stringify(transientEndpoint), 'transient'],
+    path.join(root, 'hardware-transient.log'), transientEndpoint, 'whpx'), QmpCommandTimeoutError);
+  assert.ok(Date.now() - hardwareBegan < 5000);
 
   const fatalEndpoint = process.platform === 'win32'
     ? { transport: 'pipe', name: 'codexpro-vm-2222222222222222-qmp' }

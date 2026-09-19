@@ -352,7 +352,7 @@ export class VmManager {
         qmp: installerQmp,
         display: process.platform === "win32" ? "sdl" : undefined
       });
-      await runQemuInstaller(qemuSystem, args, logPath, installerQmp);
+      await runQemuInstaller(qemuSystem, args, logPath, installerQmp, accelerator);
     };
     try {
       await createQcow2Disk(this.executor, qemuImg, diskPath, diskSizeGb);

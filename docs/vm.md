@@ -77,6 +77,8 @@ By default, managed state lives under `CODEXPRO_HOME/vm` (normally `~/.codexpro/
 
 The manifest stores a source filename/provenance label, never the original absolute host path. ISO-installed disks use an `.installed.qcow2` provenance label.
 
+TCG installer supervision polls every two seconds with a five-second QMP command timeout. A command timeout alone does not mean the guest failed: CodexPro retries on the same connection, ignoring replies for expired request IDs, and reconnects if the channel disconnects. It aborts after 60 seconds of continuous QMP unresponsiveness. Fatal guest states and process exits still terminate supervision; WHPX/KVM/HVF retain the existing 500 ms poll interval and 1.5-second command timeout. Installer log polling for the WHPX failure signature is skipped for TCG.
+
 ## Immutable base images and disposable overlays
 
 CodexPro treats every managed `base.qcow2` as immutable. It records its hash and size, marks it read-only where the filesystem supports that, verifies it before creating an instance, and never attaches it writable.
@@ -141,7 +143,7 @@ Image names and instance IDs are validated, resources and timeouts are bounded, 
 
 - QEMU is the only backend.
 - QEMU installation is always external to CodexPro.
-- Hardware acceleration is required; no automatic TCG fallback is provided.
+- Hardware acceleration is required initially; ISO installation can fall back to TCG for the known WHPX VP-exit failure described above.
 - Cross-architecture hardware-accelerated guests are rejected.
 - Full guest command/file execution is deferred even when QEMU Guest Agent is available.
 - Desktop screenshot/input APIs are foundations only; full desktop automation is deferred.

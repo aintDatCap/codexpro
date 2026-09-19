@@ -7,6 +7,15 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+export class QmpCommandTimeoutError extends Error {
+  constructor(command: string, timeoutMs: number) {
+    super(`QMP command ${command} timed out after ${timeoutMs} ms.`);
+    this.name = "QmpCommandTimeoutError";
+  }
+}
+
+export class QmpConnectionError extends Error {}
+
 export interface QmpStatus {
   status: string;
   running?: boolean;
@@ -62,6 +71,7 @@ export class QmpClient {
   private greetingResolve!: () => void;
   private greetingReject!: (error: Error) => void;
   private readonly greeting: Promise<void>;
+  private failure?: Error;
 
   private constructor(private readonly socket: net.Socket) {
     this.greeting = new Promise<void>((resolve, reject) => {
@@ -70,8 +80,8 @@ export class QmpClient {
     });
     socket.setEncoding("utf8");
     socket.on("data", (chunk) => this.onData(String(chunk)));
-    socket.on("error", (error) => this.fail(error));
-    socket.on("close", () => this.fail(new Error("QMP connection closed.")));
+    socket.on("error", (error) => this.fail(new QmpConnectionError(error.message)));
+    socket.on("close", () => this.fail(new QmpConnectionError("QMP connection closed.")));
   }
 
   static async connect(endpoint: LocalChannelEndpoint, timeoutMs = 3_000): Promise<QmpClient> {
@@ -122,6 +132,7 @@ export class QmpClient {
   }
 
   private fail(error: Error): void {
+    this.failure ??= error;
     this.greetingReject(error);
     for (const request of this.pending.values()) {
       clearTimeout(request.timer);
@@ -145,11 +156,13 @@ export class QmpClient {
   }
 
   private request(command: string, args?: Record<string, unknown>, timeoutMs = 3_000): Promise<unknown> {
+    if (this.failure) return Promise.reject(this.failure);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`QMP command ${command} timed out after ${timeoutMs} ms.`));
+        // IDs are never reused; onData ignores any later reply to this request.
+        reject(new QmpCommandTimeoutError(command, timeoutMs));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       const payload = args === undefined ? { execute: command, id } : { execute: command, arguments: args, id };
@@ -159,7 +172,7 @@ export class QmpClient {
         if (!pending) return;
         this.pending.delete(id);
         clearTimeout(pending.timer);
-        pending.reject(error);
+        pending.reject(new QmpConnectionError(error.message));
       });
     });
   }

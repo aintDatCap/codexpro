@@ -2,7 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { connectQmpWithRetry } from "./qmp.js";
+import { performance } from "node:perf_hooks";
+import { connectQmpWithRetry, QmpCommandTimeoutError, QmpConnectionError } from "./qmp.js";
 import type { LocalChannelEndpoint, VmAccelerator, VmArchitecture } from "./types.js";
 
 export interface CommandResult {
@@ -324,7 +325,8 @@ export async function runQemuInstaller(
   binary: string,
   args: readonly string[],
   logPath: string,
-  qmpEndpoint: LocalChannelEndpoint
+  qmpEndpoint: LocalChannelEndpoint,
+  accelerator?: VmAccelerator
 ): Promise<void> {
   const child = startQemuProcess(binary, args, logPath, { windowsHide: false });
   let spawnError: Error | undefined;
@@ -336,6 +338,27 @@ export async function runQemuInstaller(
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
 
+  const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+  // Do not wait for a slow QMP command when the process has already exited.
+  const untilExit = async <T>(operation: Promise<T>): Promise<T | undefined> => {
+    let onExit!: () => void;
+    const exited = new Promise<undefined>((resolve) => {
+      onExit = () => resolve(undefined);
+      child.once("exit", onExit);
+      if (hasExited()) onExit();
+    });
+    try {
+      return await Promise.race([operation, exited]);
+    } finally {
+      child.off("exit", onExit);
+    }
+  };
+  const tcg = accelerator === "tcg";
+  const commandTimeoutMs = tcg ? 5_000 : 1_500;
+  const pollMs = tcg ? 2_000 : 500;
+  const unresponsiveMs = 60_000;
+  let unresponsiveSince: number | undefined;
+
   let qmp: Awaited<ReturnType<typeof connectQmpWithRetry>> | undefined;
   try {
     qmp = await connectQmpWithRetry(qmpEndpoint, 30_000, 5_000);
@@ -343,25 +366,51 @@ export async function runQemuInstaller(
       if (spawnError) throw spawnError;
       if (child.exitCode !== null || child.signalCode !== null) break;
 
+      const requestStarted = performance.now();
       try {
-        const status = await qmp.queryStatus(1_500);
-        const logTail = await readLogTail(logPath, 8_192);
-        if (/WHPX:\s+Unexpected VP exit code 4/i.test(logTail)) {
-          throw new Error("QEMU installer hit a WHPX virtual-processor failure (Unexpected VP exit code 4).");
+        if (accelerator === "whpx" || accelerator === undefined) {
+          const logTail = await readLogTail(logPath, 8_192);
+          if (/WHPX:\s+Unexpected VP exit code 4/i.test(logTail)) {
+            throw new Error("QEMU installer hit a WHPX virtual-processor failure (Unexpected VP exit code 4).");
+          }
         }
+        const timeout = () => {
+          const remaining = unresponsiveSince === undefined ? unresponsiveMs : unresponsiveMs - (performance.now() - unresponsiveSince);
+          if (remaining <= 0) throw new Error(`QEMU installer QMP remained unresponsive for ${unresponsiveMs} ms while the process was still alive.`);
+          return Math.min(commandTimeoutMs, remaining);
+        };
+        if (!qmp) {
+          const reconnectMs = timeout();
+          try {
+            qmp = await connectQmpWithRetry(qmpEndpoint, reconnectMs, reconnectMs);
+          } catch (error) {
+            throw new QmpConnectionError(`QMP reconnect failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        const status = await untilExit(qmp.queryStatus(timeout()));
+        if (!status) break;
         if (INSTALLER_FATAL_STATES.has(status.status)) {
           throw new Error(`QEMU installer entered non-resumable state: ${status.status}.`);
         }
         if (INSTALLER_RESUMABLE_STATES.has(status.status)) {
-          await qmp.continueRun(1_500);
+          await untilExit(qmp.continueRun(timeout()));
         }
+        unresponsiveSince = undefined;
       } catch (error) {
         if (child.exitCode !== null || child.signalCode !== null) break;
         await sleep(250);
         if (child.exitCode !== null || child.signalCode !== null) break;
-        throw error;
+        if (!tcg || !(error instanceof QmpCommandTimeoutError || error instanceof QmpConnectionError)) throw error;
+        unresponsiveSince ??= requestStarted;
+        if (performance.now() - unresponsiveSince >= unresponsiveMs) {
+          throw new Error(`QEMU installer QMP remained unresponsive for ${unresponsiveMs} ms while the process was still alive.`, { cause: error });
+        }
+        if (error instanceof QmpConnectionError) {
+          qmp?.close();
+          qmp = undefined;
+        }
       }
-      await sleep(500);
+      await untilExit(sleep(pollMs));
     }
 
     const { code, signal } = await exitResult;
