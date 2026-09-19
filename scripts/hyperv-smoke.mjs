@@ -21,6 +21,12 @@ assert.equal(hypervState('Critical'), 'failed');
 assert.throws(() => hypervName('../unsafe', 'a'.repeat(64)), /identity/);
 assert.match(hypervName('vm-0123456789abcdef', 'a'.repeat(64)), /^CodexPro-vm-[a-f0-9]{16}-[a-f0-9]{16}$/);
 assert.match(hypervScripts.create, /New-VM .* -Generation 2 /);
+assert.match(hypervScripts.create, /Set-VMKeyProtector -VM \$vm -NewLocalKeyProtector/);
+assert.match(hypervScripts.create, /Enable-VMTPM -VM \$vm/);
+assert.match(hypervScripts.create, /Get-VMSecurity -VM \$vm\)\.TpmEnabled/);
+assert.ok(hypervScripts.create.indexOf('Set-VMKeyProtector') < hypervScripts.create.indexOf('Enable-VMTPM'));
+assert.ok(hypervScripts.create.indexOf('Enable-VMTPM') < hypervScripts.create.indexOf('Add-VMDvdDrive'));
+for (const cmdlet of ['Set-VMKeyProtector', 'Get-VMKeyProtector', 'Enable-VMTPM', 'Get-VMSecurity']) assert.ok(hypervScripts.doctor.includes(cmdlet));
 assert.match(hypervScripts.create, /Add-VMDvdDrive -VM \$vm -Path \$p.iso -Passthru/);
 assert.match(hypervScripts.create, /Set-VMFirmware -VM \$vm -FirstBootDevice \$dvd/);
 assert.match(hypervScripts.create, /Disconnect-VMNetworkAdapter/);
@@ -37,6 +43,7 @@ const calls = [];
 const vms = new Map();
 let counter = 0;
 let failStart = false;
+let failTpm = false;
 let lostCreateResponse = false;
 let failDestroy = false;
 let stopInstaller = false;
@@ -63,6 +70,7 @@ const executor = {
       const vmId = `00000000-0000-0000-0000-${String(++counter).padStart(12, '0')}`;
       vms.set(vmId, { ownershipId: payload.ownershipId, state: 'Off', iso: payload.iso });
       await fs.writeFile(payload.journal, '\uFEFF' + JSON.stringify({ vmId, ownershipId: payload.ownershipId }));
+      if (failTpm) return error('Virtual TPM could not be enabled.');
       if (lostCreateResponse) return error('Lost creation response');
       return result({ vmId });
     }
@@ -73,8 +81,18 @@ const executor = {
       if (failStart) return error('Simulated failed start');
       vm.state = 'Running'; return result({ state: 'Running' });
     }
-    if (operation === 'status') return result({ state: stopInstaller && vm.iso ? 'Off' : vm.state });
-    if (operation === 'console') return result({ ok: true });
+    if (operation === 'status') {
+      if (stopInstaller && vm.iso) {
+        // The user leaves the console open before starting, then installs/shuts down.
+        vm.polls = (vm.polls ?? 0) + 1;
+        return result({ state: ['Off', 'Off', 'Running', 'Off'][Math.min(vm.polls - 1, 3)] });
+      }
+      return result({ state: vm.state });
+    }
+    if (operation === 'console') {
+      assert.equal(vm.state, 'Off', 'Installer must not boot before the human can use VMConnect');
+      return result({ ok: true });
+    }
     if (operation === 'destroy') {
       if (failDestroy) return error('Simulated stop timeout');
       vms.delete(payload.vmId); return result({ removed: true });
@@ -149,6 +167,12 @@ try {
   await assert.rejects(manager.createInstance('native'), /diagnostic disk\/state preserved/);
   assert.equal(vms.size, 0);
   failStart = false;
+  failTpm = true;
+  const beforeTpmFailure = calls.length;
+  await assert.rejects(manager.createInstance('native'), /Virtual TPM could not be enabled/);
+  assert.equal(vms.size, 0);
+  assert.ok(!calls.slice(beforeTpmFailure).some(call => call.operation === 'start'));
+  failTpm = false;
   lostCreateResponse = true;
   await assert.rejects(manager.createInstance('native'), /Lost creation response/);
   assert.equal(vms.size, 0); // recovered exact GUID from journal
@@ -162,12 +186,18 @@ try {
   await assert.rejects(manager.setupImage({ ...options, name: 'headless', sourcePath: iso, headless: true }), /interactive/);
   await assert.rejects(manager.setupImage({ ...options, name: 'bad-size', sourcePath: iso, diskSizeGb: 0 }), /disk size/);
   stopInstaller = true;
-  const installed = await manager.setupImage({ ...options, name: 'installed', sourcePath: iso });
+  const installerCallsStart = calls.length;
+  const progress = [];
+  const installed = await manager.setupImage({ ...options, name: 'installed', sourcePath: iso, onProgress: message => progress.push(message) });
   assert.equal(installed.source.originalFileName, 'installer.iso.installed.vhdx');
   assert.equal(vms.size, 0); assert.equal((await manager.instances.list()).length, 0);
   const isoCreate = calls.find(c => c.operation === 'create' && c.payload.iso);
   assert.equal(isoCreate.payload.iso, iso);
   assert.ok(calls.some(c => c.operation === 'console'));
+  const installerCalls = calls.slice(installerCallsStart);
+  assert.ok(!installerCalls.some(c => c.operation === 'start'), 'Interactive installer starts from VMConnect');
+  assert.equal(installerCalls.filter(c => c.operation === 'status').length, 4, 'Initial Off must not promote an unbooted disk');
+  assert.ok(progress.some(message => /Start/.test(message) && /Space/.test(message)));
   assert.equal(calls.find(c => c.operation === 'disk' && c.payload.size).payload.size, 64 * 1024 ** 3);
   for (const ext of ['raw', 'qcow2']) {
     const unsupported = path.join(root, `source.${ext}`); await fs.writeFile(unsupported, 'unsupported');
@@ -183,7 +213,7 @@ try {
   if (process.platform === 'win32') {
     // Parse every generated script with the actual Windows PowerShell parser without executing it.
     const scriptsFile = path.join(root, 'scripts.json');
-    await fs.writeFile(scriptsFile, JSON.stringify(calls.map(c => c.script)));
+    await fs.writeFile(scriptsFile, JSON.stringify([...calls.map(c => c.script), await fs.readFile('scripts/vm-enable-tpm.ps1', 'utf8')]));
     const encodedPath = Buffer.from(scriptsFile).toString('base64');
     const parser = `$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); foreach($s in (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json)) { $tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseInput($s,[ref]$tokens,[ref]$errors) | Out-Null; if($errors.Count) { $errors | Out-String | Write-Error; exit 1 } }`;
     const parsed = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(parser, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30_000, windowsHide: true });

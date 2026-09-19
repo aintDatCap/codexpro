@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,12 +26,30 @@ if (process.platform !== 'win32') {
       const instance = await manager.createInstance(image.name);
       try {
         assert.equal((await manager.status(instance.id)).state, 'running');
+        assert.ok(instance.hyperv?.vmId && instance.hyperv?.ownershipId, 'Hyper-V identity must be persisted');
+        const vmId = instance.hyperv.vmId;
+        const ownershipId = instance.hyperv.ownershipId;
+        const securityScript = `
+$ErrorActionPreference = 'Stop'
+Import-Module Hyper-V
+$vm = Get-VM -Id ([Guid]'${vmId}')
+if ($vm.Notes -cne 'CodexPro:${ownershipId}') { throw 'Integration VM ownership mismatch.' }
+$protector = [byte[]](Get-VMKeyProtector -VM $vm)
+$security = Get-VMSecurity -VM $vm
+@{ tpmEnabled=[bool]$security.TpmEnabled; keyProtectorBytes=[int]$protector.Length } | ConvertTo-Json -Compress
+`;
+        const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        const securityResult = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(securityScript, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+        assert.equal(securityResult.status, 0, securityResult.stderr || securityResult.stdout);
+        const security = JSON.parse(securityResult.stdout.replace(/^\\uFEFF/, '').trim());
+        assert.equal(security.tpmEnabled, true, 'Disposable Hyper-V VM must have virtual TPM enabled');
+        assert.ok(security.keyProtectorBytes > 0, 'Disposable Hyper-V VM must have a key protector');
         assert.equal((await manager.inspectImage(image.name)).sha256, image.sha256);
       } finally { await manager.destroyInstance(instance.id); }
       assert.equal((await manager.listInstances()).length, 0);
       assert.equal((await manager.inspectImage(image.name)).sha256, image.sha256);
       canDelete = true;
-      console.log('Hyper-V integration passed: standalone import, differencing VHDX, Generation 2 start/status/destroy, unchanged base.');
+      console.log('Hyper-V integration passed: standalone import, differencing VHDX, Generation 2 start/status/destroy, vTPM 2.0/key protector, unchanged base.');
     }
   } finally {
     if (canDelete) {

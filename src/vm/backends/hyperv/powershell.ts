@@ -14,7 +14,7 @@ $commands = $false; $service = $false; $hypervisor = $false; $permission = $fals
 if ($module) {
   Import-Module Hyper-V
   $commands = $true
-  foreach ($name in @('New-VM','Get-VM','Set-VM','Set-VMProcessor','Set-VMFirmware','Add-VMDvdDrive','Get-VMHardDiskDrive','Get-VMNetworkAdapter','Disconnect-VMNetworkAdapter','Start-VM','Stop-VM','Remove-VM','New-VHD','Get-VHD','Convert-VHD','Test-VHD')) {
+  foreach ($name in @('New-VM','Get-VM','Set-VM','Set-VMProcessor','Set-VMFirmware','Set-VMKeyProtector','Get-VMKeyProtector','Enable-VMTPM','Get-VMSecurity','Add-VMDvdDrive','Get-VMHardDiskDrive','Get-VMNetworkAdapter','Disconnect-VMNetworkAdapter','Start-VM','Stop-VM','Remove-VM','New-VHD','Get-VHD','Convert-VHD','Test-VHD')) {
     if (!(Get-Command $name -ErrorAction SilentlyContinue)) { $commands = $false }
   }
 }
@@ -44,6 +44,9 @@ $vm = New-VM -Name $p.name -Generation 2 -MemoryStartupBytes ([long]$p.memory) -
 # Journal the GUID before any start. A lost Node response must not lose VM identity.
 @{ vmId=$vm.Id.ToString(); ownershipId=$p.ownershipId } | ConvertTo-Json -Compress | Set-Content -LiteralPath $p.journal -Encoding UTF8
 Set-VM -VM $vm -Notes ('CodexPro:' + $p.ownershipId) -AutomaticStartAction Nothing -AutomaticStopAction TurnOff -CheckpointType Disabled
+Set-VMKeyProtector -VM $vm -NewLocalKeyProtector
+Enable-VMTPM -VM $vm
+if (!(Get-VMSecurity -VM $vm).TpmEnabled) { throw 'Virtual TPM could not be enabled.' }
 Set-VMProcessor -VM $vm -Count ([int]$p.cpus)
 Get-VMNetworkAdapter -VM $vm | Disconnect-VMNetworkAdapter
 # Generic modern UEFI media: Secure Boot is off; no guest credential is needed.

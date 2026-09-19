@@ -153,7 +153,10 @@ export class HypervBackend implements VmBackend {
       disk, iso, directory: record.instanceDir, journal: path.join(record.instanceDir, "hyperv-identity.json")
     }, 60_000);
     const vmId = validateVmGuid(result.vmId);
-    await this.instances.update(record.id, { hyperv: { ownershipId, vmId }, state: "starting" });
+    await this.instances.update(record.id, { hyperv: { ownershipId, vmId }, state: iso ? "created" : "starting" });
+    // Windows installer media gives only a short window to press a boot key.
+    // Let the human start ISO installs from the already-open VMConnect console.
+    if (iso) return;
     await this.ps.run("start", { vmId, ownershipId }, 60_000);
     await this.instances.update(record.id, { state: "running" });
   }
@@ -188,14 +191,19 @@ export class HypervBackend implements VmBackend {
           await this.ps.run("disk", { disk, size: size * 1024 ** 3 });
           await this.createVm(record, disk, iso);
           const identity = await this.identity(await this.instances.read(record.id));
-          options.onProgress?.(`Installer ${record.id} (${identity.vmId}). Complete installation in VMConnect, then shut down the guest. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
+          options.onProgress?.(`Installer ${record.id} (${identity.vmId}). In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. If the UEFI boot summary appears, click Restart now and press Space immediately. Complete installation, then shut down the guest. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
           await this.ps.run("console", identity);
           const deadline = Date.now() + 4 * 60 * 60_000;
+          let started = false;
           for (;;) {
             if (interrupted) throw new Error("ISO installation interrupted");
             if (Date.now() >= deadline) throw new Error("ISO installation timed out after 4 hours");
             const status = await this.ps.run<{ state: string }>("status", identity);
-            if (status.state === "Off") break;
+            if (status.state === "Running" && !started) {
+              started = true;
+              await this.instances.update(record.id, { state: "running" });
+            }
+            if (status.state === "Off" && started) break;
             if (hypervState(status.state) === "failed") throw new Error(`Installer entered unexpected state ${status.state}`);
             await new Promise(resolve => setTimeout(resolve, 2000));
           }
