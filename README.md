@@ -9,10 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/codexpro"><img alt="npm" src="https://img.shields.io/npm/v/codexpro?style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rebel0789/codexpro/ci.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/rebel0789/codexpro?style=flat-square"></a>
-  <a href="https://rebel0789.github.io/codexpro/"><img alt="Website" src="https://img.shields.io/badge/site-GitHub%20Pages-67e8f9?style=flat-square"></a>
+  <a href="https://github.com/aintDatCap/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/aintDatCap/codexpro/ci.yml?branch=main&style=flat-square"></a>
+  <a href="https://github.com/aintDatCap/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/aintDatCap/codexpro?style=flat-square"></a>
+  <a href="https://github.com/aintDatCap/codexpro"><img alt="Source" src="https://img.shields.io/badge/source-GitHub-67e8f9?style=flat-square"></a>
 </p>
 
 ## What it is
@@ -32,7 +31,12 @@ Needs:
 - An HTTPS URL to your machine for ChatGPT web (tunnel or Tailscale Funnel)
 
 ```bash
-npm install -g codexpro
+git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link
+
 cd /path/to/your/repo
 codexpro setup
 ```
@@ -70,6 +74,16 @@ With workspace write mode (the normal agent setup):
 - review diffs with `show_changes`
 - write plans under `.ai-bridge`
 - export a context bundle for chats that cannot call tools
+
+## Added in this fork
+
+- Disposable VMs: Hyper-V on Windows, QEMU/KVM on Linux, QEMU/HVF on macOS.
+- Windows ISO detection, Secure Boot + vTPM, and optional unattended Windows setup with a local account and reduced OOBE/privacy prompts.
+- Backend-neutral guest tools: `vm_guest_status`, `vm_exec`, `vm_upload`, and `vm_download`.
+- Experimental ChatGPT-browser subagents using a dedicated visible Chrome profile attached over CDP.
+- Logical client IDs, renewable leases, reconnect-safe runtime ownership, and correlated runtime/tool logging.
+
+See [VM runtimes](docs/vm.md) and [VM usage for AI agents](docs/vm-ai-usage.md) for the guest workflow.
 
 ## Windows and WSL
 
@@ -190,11 +204,13 @@ Read [SECURITY.md](SECURITY.md) before exposing a tunnel.
 ## Update
 
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+cd /path/to/codexpro
+git pull --ff-only
+npm install
+npm run build
 ```
 
-Restart `codexpro start` after updating. Saved profiles under `~/.codexpro` stay in place.
+`npm link` only needs to be repeated if the link was removed. Restart `codexpro start` after updating; saved profiles under `~/.codexpro` stay in place.
 
 ## Agent harness features
 
@@ -257,7 +273,7 @@ npm run release:publish
 
 ## Docs
 
-- [Website](https://rebel0789.github.io/codexpro/)
+- [Repository](https://github.com/aintDatCap/codexpro)
 - [FAQ](FAQ.md)
 - [Research workflow feedback, fixes, and output paging](docs/research-feedback.md)
 - [VM runtimes](docs/vm.md)

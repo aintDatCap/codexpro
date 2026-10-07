@@ -111,6 +111,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "minimatch": "^10.2.6",
+    "patchright-core": "^1.63.0",
     "playwright": "^1.63.0",
     "zod": "^4.6.5"
   },

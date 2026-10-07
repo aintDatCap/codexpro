@@ -4,15 +4,15 @@ CodexPro exposes a local workspace to an MCP client. Treat it like a developer t
 
 ## Supported Version
 
-Security fixes target the latest published version only until the project reaches `1.0.0`.
+Security fixes and feature notes for this fork track the current GitHub `main` unless a release states otherwise.
 
-Feature-specific notes follow GitHub `main`; npm users should check the published version before relying on a new command.
+Build from the source checkout described in the README; the upstream npm package is not the canonical distribution for fork-specific changes.
 
 ## Reporting
 
 Please report security issues privately before opening a public issue. If the repository has GitHub private vulnerability reporting enabled, use that. Otherwise contact the maintainer listed by the project owner.
 
-Maintainer security contact: [@rebel0789 on GitHub](https://github.com/rebel0789). You can also try the repository's [new security advisory form](https://github.com/rebel0789/codexpro/security/advisories/new) when GitHub makes it available for this repository. Do not include secrets, private repository contents, tunnel tokens, or `.env` values in reports.
+Maintainer security contact: [@aintDatCap on GitHub](https://github.com/aintDatCap). You can also use the repository's [security advisory form](https://github.com/aintDatCap/codexpro/security/advisories/new). Do not include secrets, private repository contents, tunnel tokens, or `.env` values in reports.
 
 ## Terms Boundary
 

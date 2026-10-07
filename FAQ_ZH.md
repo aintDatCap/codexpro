@@ -8,12 +8,14 @@ CodexPro 不解锁 Plugins，不解锁模型，不绕过账号限制，也不提
 
 ## 推荐安装方式是什么？
 
-注意：这个 FAQ 跟随 GitHub `main`。假设某个 `main` 功能已经进入 `codexpro@latest` 前，请先看 npm badge/version。
-
-全局安装一次：
+先克隆并构建当前 fork：
 
 ```bash
-npm install -g codexpro
+git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link
 ```
 
 然后进入目标仓库运行：
@@ -28,20 +30,18 @@ codexpro setup
 codexpro start
 ```
 
-`npx codexpro@latest start` 仍然可用，但普通用户更容易理解全局安装。
-
 ## 怎么更新 CodexPro？
 
-没有 `codexpro update` 命令。重新安装最新包并重启连接即可：
+更新本地 clone 并重新构建：
 
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+cd /path/to/codexpro
+git pull --ff-only
+npm install
+npm run build
 ```
 
 然后停掉旧进程，在启动仓库里重新运行 `codexpro start`。`~/.codexpro` 下的已保存配置会保留。
-
-如果文档写了某个功能，但 `codexpro --version` 还没有，说明 GitHub `main` 比 npm `latest` 新。等下一版发布，或从带 tag 的 GitHub release 安装。
 
 ## CodexPro 和网页版自带 Agent 有什么区别？
 
@@ -306,22 +306,22 @@ repo B: port 8788, hostname B, ChatGPT plugin URL B
 
 后台运行或交给 service manager 时，使用 `codexpro start --headless`。它不会提问、访问剪贴板或打开浏览器；会用 `CODEXPRO_READY` 报告就绪，HTTP runtime 意外退出时 launcher 会以非零状态退出。
 
-## 能不能用 codexpro.github.io？
+## 项目地址
 
-GitHub Pages 的 `owner.github.io` 只能由名为 `owner` 的 GitHub 用户或组织使用。
+当前 fork 的仓库地址：
 
-`codexpro` 这个 GitHub 用户名已经存在，所以 `rebel0789` 账号下的项目不能使用 `codexpro.github.io`。
+`https://github.com/aintDatCap/codexpro`
 
-当前干净的 GitHub Pages 地址是：
+如启用 GitHub Pages，可使用：
 
 ```text
-https://rebel0789.github.io/codexpro/
+https://aintdatcap.github.io/codexpro/
 ```
 
 中文页面是：
 
 ```text
-https://rebel0789.github.io/codexpro/zh.html
+https://aintdatcap.github.io/codexpro/zh.html
 ```
 
 ## CodexPro 是否违反服务条款？

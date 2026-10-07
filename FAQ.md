@@ -54,8 +54,6 @@ codexpro review --json
 
 ## What is the `codexpro` supertool?
 
-Note: this FAQ follows GitHub `main`. Check the npm badge/version before assuming a `main` feature is in `codexpro@latest`.
-
 `codexpro` is a stable wrapper tool for advanced setups. It accepts:
 
 ```json
@@ -68,10 +66,14 @@ Use explicit tools such as `read`, `search`, `edit`, `bash`, and `show_changes` 
 
 ## What is the recommended install path?
 
-Install globally once:
+Clone and build the fork:
 
 ```bash
-npm install -g codexpro
+git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link
 ```
 
 Then run setup from the repo you want ChatGPT to work on:
@@ -86,20 +88,18 @@ After setup, daily startup from that same repo is:
 codexpro start
 ```
 
-`npx codexpro@latest start` still works as a no-install fallback, but the global install is easier for normal users.
-
 ## How do I update CodexPro?
 
-There is no `codexpro update` command. Reinstall the latest package and restart the connector:
+Update the cloned source and rebuild:
 
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+cd /path/to/codexpro
+git pull --ff-only
+npm install
+npm run build
 ```
 
 Then stop the old process and run `codexpro start` again from the launch repo. Saved profiles under `~/.codexpro` stay in place.
-
-If docs mention a feature that `codexpro --version` does not include yet, GitHub `main` is ahead of npm `latest`. Wait for the next release or install from the tagged GitHub release.
 
 ## How is CodexPro different from ChatGPT's built-in web Agent?
 
@@ -183,11 +183,17 @@ This backend uses the normal ChatGPT web UI. It does not use OpenAI API inferenc
 
 Each worker remains attached to the same browser tab for follow-up messages, and its ChatGPT conversation URL is exposed in subagent metadata when available. The web adapter is experimental and may need maintenance when ChatGPT changes its DOM or accessibility structure. Usage remains subject to the user's normal ChatGPT plan and account limits.
 
-## Can CodexPro use GPT-5.5?
+## What VM features are available?
 
-Only if your ChatGPT account already exposes that exact model, or a similar stronger model, in the ChatGPT web product surface you are using, and that model surface can call custom MCP plugins.
+CodexPro uses Hyper-V on Windows and QEMU on Linux/macOS. Images are immutable bases with disposable per-instance overlays. On Windows, `vm setup` can detect Windows installer media, configure Secure Boot and vTPM, and optionally create an unattend ISO that reduces setup/OOBE prompts without modifying the Microsoft ISO.
 
-Some GPT-5.5 Pro or other model surfaces may not expose plugin actions in a given chat. If CodexPro actions are unavailable there, CodexPro cannot make that request reach the local server. CodexPro does not provide, proxy, resell, or unlock models. It gives compatible ChatGPT sessions local repo tools.
+Agents use `vm_guest_status`, `vm_exec`, `vm_upload`, and `vm_download`; Hyper-V uses PowerShell Direct and QEMU uses QEMU Guest Agent. See [VM runtimes](docs/vm.md) and [VM usage for AI agents](docs/vm-ai-usage.md).
+
+## Can CodexPro use newer ChatGPT models?
+
+Only if your ChatGPT account already exposes that model in the ChatGPT surface you are using and that surface can call the custom MCP plugin.
+
+Some model surfaces may not expose plugin actions in a given chat. If CodexPro actions are unavailable there, CodexPro cannot make that request reach the local server. CodexPro does not provide, proxy, resell, or unlock models. It gives compatible ChatGPT sessions local repo tools.
 
 For models that cannot call tools, generate a repo context bundle instead:
 
@@ -385,21 +391,9 @@ This protects against stale file content. It does not turn CodexPro into a colla
 
 For service managers and background launches, use `codexpro start --headless`. It avoids prompts, clipboard and browser actions, reports readiness with `CODEXPRO_READY`, and exits nonzero if its HTTP runtime stops unexpectedly.
 
-## Why not use codexpro.github.io?
-
-GitHub Pages gives `owner.github.io` only to the GitHub user or organization named `owner`.
-
-The `codexpro` GitHub username already exists, so this repo cannot use `codexpro.github.io` from the `rebel0789` account.
-
-The clean GitHub Pages URL for this project is:
-
-```text
-https://rebel0789.github.io/codexpro/
-```
-
 ## Is CodexPro production safe?
 
-CodexPro's host file and Bash tools are a local developer bridge, not an OS sandbox. Optional QEMU VM runtimes can provide disposable isolated guest environments for software testing, with immutable managed base images and per-instance overlays.
+CodexPro's host file and Bash tools are a local developer bridge, not an OS sandbox. Optional Hyper-V/QEMU VM runtimes can provide disposable isolated guest environments for software testing, with immutable managed base images and per-instance overlays.
 
 VM isolation is an additional boundary, not a guarantee that arbitrary code is safe. Guest networking and the software inside an image still matter.
 

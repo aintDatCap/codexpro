@@ -10,9 +10,9 @@
     />
     <meta property="og:title" content="CodexPro 中文文档" />
     <meta property="og:description" content="本地 MCP 桥：把 Server URL 粘贴到 ChatGPT Plugins，在你允许的仓库上工作。" />
-    <meta property="og:image" content="https://rebel0789.github.io/codexpro/og.svg" />
+    <meta property="og:image" content="https://aintdatcap.github.io/codexpro/og.svg" />
     <meta name="theme-color" content="#0b1220" />
-    <link rel="alternate" hreflang="en" href="https://rebel0789.github.io/codexpro/" />
+    <link rel="alternate" hreflang="en" href="https://aintdatcap.github.io/codexpro/" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -30,7 +30,7 @@
         <a href="#modes">模式</a>
         <a href="#faq">FAQ</a>
         <a href="./index.html">English</a>
-        <a class="nav-star" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
+        <a class="nav-star" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
       </nav>
     </header>
 
@@ -41,24 +41,26 @@
           <p class="eyebrow">在仓库里安装</p>
           <h1>把 ChatGPT 连接到本地代码。</h1>
           <p class="hero-lede">
-            安装 CLI，在项目里运行 setup，然后把复制好的 Server URL 粘贴到 ChatGPT Plugins。CodexPro 会处理本地 server、token、tunnel 和 workspace 工具。
+            克隆并构建当前 fork，在项目里运行 setup，然后把复制好的 Server URL 粘贴到 ChatGPT Plugins。CodexPro 会处理本地 server、token、tunnel 和 workspace 工具。
           </p>
           <div class="install-line" role="group" aria-label="安装命令">
-            <code>npm install -g codexpro
-codexpro setup</code>
-            <button class="copy-button" data-copy="npm install -g codexpro&#10;codexpro setup">复制</button>
+            <code>git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link</code>
+            <button class="copy-button" data-copy="git clone https://github.com/aintDatCap/codexpro.git&#10;cd codexpro&#10;npm install&#10;npm run build&#10;npm link">复制</button>
           </div>
-          <p class="eyebrow">main 文档可能早于 npm 发布；全局安装前请看 npm 版本，未发布行为用 source checkout。</p>
+          <p class="eyebrow">文档跟随当前 fork 源码；更新时使用 git pull 后重新构建。</p>
           <div class="hero-proof" aria-label="核心能力">
             <span>AGENTS.md 上下文</span>
             <span>.ai-bridge handoff</span>
-            <span>紧凑卡片</span>
-            <span>Codex session metadata 可选开启</span>
+            <span>Hyper-V / QEMU VM</span>
+            <span>guest exec / browser subagents</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="#quickstart">安装 CodexPro</a>
-            <a class="button secondary star-button" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
-            <a class="button secondary" href="https://www.npmjs.com/package/codexpro">查看 npm</a>
+            <a class="button primary" href="#quickstart">克隆 CodexPro</a>
+            <a class="button secondary star-button" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
           </div>
         </div>
 
@@ -75,7 +77,7 @@ codexpro setup</code>
             <div class="demo-grid">
               <div class="chat-pane">
                 <small>安装</small>
-                <p><code>npm install -g codexpro</code><br /><code>codexpro setup</code></p>
+                <p><code>git clone .../aintDatCap/codexpro.git</code><br /><code>npm install &amp;&amp; npm run build &amp;&amp; npm link</code></p>
                 <div class="message-chip">Server URL 自动复制</div>
               </div>
               <div class="tool-pane">
@@ -113,7 +115,7 @@ codexpro setup</code>
         <div>
           <span>01</span>
           <strong>Install</strong>
-          <p>先运行 <code>npm install -g codexpro</code>。</p>
+          <p>克隆当前 fork，安装依赖、构建并运行 <code>npm link</code>。</p>
         </div>
         <div>
           <span>02</span>
@@ -164,7 +166,7 @@ codexpro setup</code>
       <section id="quickstart" class="section two-col">
         <div>
           <p class="eyebrow">快速开始</p>
-          <h2>全局安装，然后在仓库中运行 setup。</h2>
+          <h2>构建本地 clone，然后在仓库中运行 setup。</h2>
           <p>
             默认路径使用 normal coding 模式、workspace 写入、安全 bash 和你选择的 tunnel。setup 保存配置后，日常启动只需要 <code>codexpro start</code>。
           </p>
@@ -173,8 +175,12 @@ codexpro setup</code>
           <div class="step">
             <span>1</span>
             <div>
-              <strong>全局安装</strong>
-              <pre><code>npm install -g codexpro</code></pre>
+              <strong>克隆并构建</strong>
+              <pre><code>git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link</code></pre>
             </div>
           </div>
           <div class="step">
@@ -392,11 +398,11 @@ codexpro start</code></pre>
           </article>
         </div>
         <div class="link-row" aria-label="中文文档链接">
-          <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/README_ZH.md">中文 README</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/FAQ_ZH.md">中文 FAQ</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/DOMAIN_SETUP.md">稳定 URL 指南</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">安全说明</a>
+          <a class="star-link" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/README_ZH.md">中文 README</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/FAQ_ZH.md">中文 FAQ</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/DOMAIN_SETUP.md">稳定 URL 指南</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/SECURITY.md">安全说明</a>
         </div>
       </section>
 
@@ -420,10 +426,9 @@ codexpro start</code></pre>
 
     <footer class="site-footer">
       <span>CodexPro</span>
-      <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
-      <a href="https://www.npmjs.com/package/codexpro">npm</a>
+      <a class="star-link" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />GitHub 点星</a>
       <a href="./index.html">English</a>
-      <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">安全说明</a>
+      <a href="https://github.com/aintDatCap/codexpro/blob/main/SECURITY.md">安全说明</a>
     </footer>
 
     <script src="./script.js"></script>

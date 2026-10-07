@@ -84,7 +84,14 @@ Use CodexPro. Run bash with pwd, then run bash with a blocked command. Report bo
 Fresh-user setup should work with:
 
 ```bash
-npx codexpro@latest start
+git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link
+
+cd /path/to/your/repo
+codexpro setup
 ```
 
 The terminal must clearly show:

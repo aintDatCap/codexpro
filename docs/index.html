@@ -10,9 +10,9 @@
     />
     <meta property="og:title" content="CodexPro" />
     <meta property="og:description" content="Local MCP bridge: paste a Server URL into ChatGPT Plugins and work on repos you allow." />
-    <meta property="og:image" content="https://rebel0789.github.io/codexpro/og.svg" />
+    <meta property="og:image" content="https://aintdatcap.github.io/codexpro/og.svg" />
     <meta name="theme-color" content="#0b1220" />
-    <link rel="alternate" hreflang="zh-CN" href="https://rebel0789.github.io/codexpro/zh.html" />
+    <link rel="alternate" hreflang="zh-CN" href="https://aintdatcap.github.io/codexpro/zh.html" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -30,7 +30,7 @@
         <a href="#faq">FAQ</a>
         <a href="#stop">Stop</a>
         <a href="./zh.html">中文</a>
-        <a class="nav-star" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
+        <a class="nav-star" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
       </nav>
     </header>
 
@@ -41,14 +41,17 @@
           <p class="eyebrow">Install in your repo</p>
           <h1>Use ChatGPT like your local coding agent.</h1>
           <p class="hero-lede">
-            Install the CLI, run setup inside a project, then paste the copied Server URL into ChatGPT Plugins. ChatGPT gets bounded tools for the launch project and any additional projects you explicitly allow.
+            Clone and build this fork, run setup inside a project, then paste the copied Server URL into ChatGPT Plugins. ChatGPT gets bounded tools for the launch project and any additional projects you explicitly allow.
           </p>
           <div class="install-line" role="group" aria-label="Install command">
-            <code>npm install -g codexpro
-codexpro setup</code>
-            <button class="copy-button" data-copy="npm install -g codexpro&#10;codexpro setup">Copy</button>
+            <code>git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link</code>
+            <button class="copy-button" data-copy="git clone https://github.com/aintDatCap/codexpro.git&#10;cd codexpro&#10;npm install&#10;npm run build&#10;npm link">Copy</button>
           </div>
-          <p class="eyebrow">Main docs may be ahead of npm; check the npm version or use a source checkout for unreleased behavior.</p>
+          <p class="eyebrow">These docs follow this fork's source tree; update with git pull and rebuild.</p>
           <div class="hero-proof" aria-label="Core capabilities">
             <span>explicit project access</span>
             <span>token-protected URL</span>
@@ -56,9 +59,8 @@ codexpro setup</code>
             <span>repo-backed context</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="#quickstart">Install CodexPro</a>
-            <a class="button secondary star-button" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
-            <a class="button secondary" href="https://www.npmjs.com/package/codexpro">View npm package</a>
+            <a class="button primary" href="#quickstart">Clone CodexPro</a>
+            <a class="button secondary star-button" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
           </div>
         </div>
 
@@ -92,7 +94,7 @@ codexpro setup</code>
             <div class="trust-row">
               <div><span>Not a model proxy</span><strong>uses your own ChatGPT account</strong></div>
               <div><span>Not a quota bypass</span><strong>product limits still apply</strong></div>
-              <div><span>Host tools are not an OS sandbox</span><strong>optional QEMU guests are separate</strong></div>
+              <div><span>Host tools are not an OS sandbox</span><strong>optional Hyper-V/QEMU guests are separate</strong></div>
             </div>
           </div>
           <div class="floating-note">
@@ -106,8 +108,8 @@ codexpro setup</code>
       <section class="strip" aria-label="Core workflow">
         <div>
           <span>01</span>
-          <strong>Install</strong>
-          <p>Run <code>npm install -g codexpro</code> once.</p>
+          <strong>Clone</strong>
+          <p>Clone this fork, install dependencies, build, and run <code>npm link</code>.</p>
         </div>
         <div>
           <span>02</span>
@@ -219,20 +221,48 @@ codexpro setup</code>
         </div>
       </section>
 
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Fork additions</p>
+          <h2>VM-backed testing and reconnect-safe agent workflows.</h2>
+        </div>
+        <div class="compare-grid">
+          <article>
+            <span class="tag">VMs</span>
+            <h3>Native Hyper-V + QEMU</h3>
+            <p>Windows uses Hyper-V; Linux uses QEMU/KVM; macOS uses QEMU/HVF, with immutable bases and disposable overlays.</p>
+          </article>
+          <article>
+            <span class="tag">Windows</span>
+            <h3>Automated image setup</h3>
+            <p>Windows ISO detection, Secure Boot, vTPM, and optional unattend media reduce OOBE/privacy setup without modifying the Microsoft ISO.</p>
+          </article>
+          <article>
+            <span class="tag">Agents</span>
+            <h3>Guest control and subagents</h3>
+            <p>Agents can exec/upload/download through PowerShell Direct or QGA, while experimental ChatGPT-browser workers use a dedicated visible Chrome profile.</p>
+          </article>
+        </div>
+      </section>
+
       <section id="quickstart" class="section two-col">
         <div>
           <p class="eyebrow">Quick start</p>
-          <h2>Install once, then run setup in your repo.</h2>
+          <h2>Build the cloned fork, then run setup in your repo.</h2>
           <p>
-            The default path uses normal coding mode, workspace writes, safe bash, and a tunnel you choose during setup. After setup, daily startup is just <code>codexpro start</code>.
+            The default path uses normal coding mode, workspace writes, safe bash, and a tunnel you choose during setup. After linking the clone, daily startup is just <code>codexpro start</code>.
           </p>
         </div>
         <div class="steps">
           <div class="step">
             <span>1</span>
             <div>
-              <strong>Install globally</strong>
-              <pre><code>npm install -g codexpro</code></pre>
+              <strong>Clone and build</strong>
+              <pre><code>git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link</code></pre>
             </div>
           </div>
           <div class="step">
@@ -388,9 +418,13 @@ cloudflared tunnel route dns codexpro codexpro.example.com</code></pre>
         <div class="reference-grid">
           <article>
             <small>Install</small>
-            <h3>Install globally once</h3>
-            <pre><code>npm install -g codexpro</code></pre>
-            <p>This gives users the simple <code>codexpro</code> command everywhere.</p>
+            <h3>Clone and build this fork</h3>
+            <pre><code>git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link</code></pre>
+            <p><code>npm link</code> exposes the command while keeping the source checkout as the installed version.</p>
           </article>
           <article>
             <small>First run</small>
@@ -482,6 +516,11 @@ codexpro settings delete --yes</code></pre>
             <span>wait_for_handoff</span>
             <span>export_pro_context</span>
             <span>handoff_to_agent</span>
+            <span>vm</span>
+            <span>vm_guest_status</span>
+            <span>vm_exec</span>
+            <span>vm_upload</span>
+            <span>vm_download</span>
           </div>
         </div>
 
@@ -529,11 +568,10 @@ codexpro settings delete --yes</code></pre>
         </div>
 
         <div class="link-row" aria-label="Documentation links">
-          <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star the GitHub repo</a>
-          <a href="https://www.npmjs.com/package/codexpro">npm package</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/DOMAIN_SETUP.md">Stable URL guide</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/FAQ.md">FAQ</a>
-          <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">Security notes</a>
+          <a class="star-link" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star the GitHub repo</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/DOMAIN_SETUP.md">Stable URL guide</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/FAQ.md">FAQ</a>
+          <a href="https://github.com/aintDatCap/codexpro/blob/main/SECURITY.md">Security notes</a>
         </div>
       </section>
 
@@ -553,8 +591,8 @@ codexpro settings delete --yes</code></pre>
             <p>No. It does not bypass, avoid, increase, pool, resell, or modify ChatGPT, Codex, OpenAI, or third-party model limits. Every request still runs through your own ChatGPT session and whatever limits that account has.</p>
           </article>
           <article>
-            <h3>Why install globally?</h3>
-            <p>Global install gives users one command: <code>codexpro setup</code>. It avoids long <code>npx</code> commands and makes daily startup simply <code>codexpro start</code>.</p>
+            <h3>Why clone first?</h3>
+            <p>This fork documents the source checkout as the canonical install. <code>npm link</code> keeps the short <code>codexpro</code> command without installing an unrelated published package.</p>
           </article>
           <article>
             <h3>What URL should I use?</h3>
@@ -598,7 +636,7 @@ codexpro settings delete --yes</code></pre>
       <section class="section safety">
         <div>
           <p class="eyebrow">Safety boundary</p>
-          <h2>Host tools are a local developer bridge; optional QEMU guests add disposable isolation.</h2>
+          <h2>Host tools are a local developer bridge; optional Hyper-V/QEMU guests add disposable isolation.</h2>
         </div>
         <ul>
           <li>Public tunnels are token-protected by default.</li>
@@ -607,17 +645,16 @@ codexpro settings delete --yes</code></pre>
           <li><code>--no-bash</code> disables all ChatGPT-triggered shell commands.</li>
           <li><code>--bash-session</code> with <code>--require-bash-session</code> requires explicit session targeting before bash runs.</li>
           <li>Use handoff mode when you want ChatGPT to plan and Codex to edit.</li>
-          <li>QEMU VM runtimes use immutable bases and disposable overlays, but do not make arbitrary code universally safe.</li>
+          <li>Hyper-V/QEMU VM runtimes use immutable bases and disposable overlays, but do not make arbitrary code universally safe.</li>
         </ul>
       </section>
     </main>
 
     <footer class="site-footer">
       <span>CodexPro</span>
-      <a class="star-link" href="https://github.com/rebel0789/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
-      <a href="https://www.npmjs.com/package/codexpro">npm</a>
+      <a class="star-link" href="https://github.com/aintDatCap/codexpro"><img src="./star.svg" alt="" aria-hidden="true" />Star on GitHub</a>
       <a href="./zh.html">中文</a>
-      <a href="https://github.com/rebel0789/codexpro/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/aintDatCap/codexpro/blob/main/SECURITY.md">Security</a>
     </footer>
 
     <script src="./script.js"></script>

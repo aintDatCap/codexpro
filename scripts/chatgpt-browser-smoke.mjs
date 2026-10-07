@@ -228,21 +228,6 @@ try {
   createGate.resolve();
   await firstConcurrentSpawn;
 
-  function fakeChild(pid) {
-    const child = new EventEmitter();
-    child.pid = pid;
-    child.exitCode = null;
-    child.killed = false;
-    child.kill = function kill() {
-      if (this.exitCode !== null) return false;
-      this.killed = true;
-      this.exitCode = 0;
-      this.emit('exit', 0, null);
-      return true;
-    };
-    return child;
-  }
-
   function fakePage() {
     const page = new EventEmitter();
     page._url = 'about:blank';
@@ -259,44 +244,33 @@ try {
     return page;
   }
 
-  function fakeContext(pages) {
-    return {
-      pages() { return pages; },
-      async newPage() {
-        const page = fakePage();
-        pages.push(page);
-        return page;
-      }
+  function fakeContext(pages, onClose = () => {}) {
+    const context = new EventEmitter();
+    context.pages = () => pages;
+    context.newPage = async () => {
+      const page = fakePage();
+      pages.push(page);
+      return page;
     };
-  }
-
-  function fakeBrowser(context, onClose = () => {}) {
-    const browser = new EventEmitter();
-    browser.contexts = () => [context];
-    browser.close = async () => {
+    context.close = async () => {
       onClose();
-      browser.emit('disconnected');
+      context.emit('close');
     };
-    return browser;
+    return context;
   }
 
-  const pages = [];
+  const pages = [fakePage()];
   const adapters = [];
-  const spawnCalls = [];
-  const connectCalls = [];
-  let activePort;
-  let activePortReady = false;
-  let ownedBrowserClosed = 0;
-  const context = fakeContext(pages);
-  let attachedBrowser;
+  const launchCalls = [];
+  let contextCloseCount = 0;
+  const context = fakeContext(pages, () => { contextCloseCount += 1; });
   const manager = new ChatGPTBrowserManager(
     { ...browserConfig, chatgptBrowserProfilePath: path.join(tmp, 'chatgpt-profile'), chatgptBrowserResponseTimeoutMs: 5000 },
     async () => ({
       chromium: {
-        async connectOverCDP(endpoint) {
-          connectCalls.push(endpoint);
-          attachedBrowser = fakeBrowser(context, () => { ownedBrowserClosed += 1; });
-          return attachedBrowser;
+        async launchPersistentContext(userDataDir, options) {
+          launchCalls.push({ userDataDir, options });
+          return context;
         }
       }
     }),
@@ -321,33 +295,26 @@ try {
       discoverChrome(override) {
         assert.equal(override, undefined);
         return '/installed/google-chrome';
-      },
-      spawnProcess(command, args, options) {
-        spawnCalls.push({ command, args, options });
-        activePort = 9222;
-        activePortReady = true;
-        return fakeChild(4321);
-      },
-      async readDebuggingPort() { return activePort; },
-      async probeDebuggingPort(port) { return activePortReady && port === activePort; },
-      sleep: async () => {}
+      }
     }
   );
 
   await Promise.all([manager.ensureReady(), manager.ensureReady()]);
-  assert.equal(spawnCalls.length, 1, 'Chrome must start only once');
-  assert.deepEqual(connectCalls, ['http://127.0.0.1:9222']);
+  assert.equal(launchCalls.length, 1, 'Patchright must launch the persistent Chrome context only once');
   assert.equal(manager.getState(), 'attached');
-  assert.equal(spawnCalls[0].command, '/installed/google-chrome');
-  assert.equal(spawnCalls[0].args.includes('--remote-debugging-port=0'), true);
-  assert.equal(spawnCalls[0].args.includes('--remote-debugging-address=127.0.0.1'), true);
-  assert.equal(spawnCalls[0].args.includes(`--user-data-dir=${path.join(tmp, 'chatgpt-profile')}`), true);
-  assert.equal(spawnCalls[0].args.some((arg) => /AutomationControlled|headless|stealth/i.test(arg)), false);
-  assert.equal(spawnCalls[0].args.at(-1), 'https://chatgpt.com/');
+  assert.equal(launchCalls[0].userDataDir, path.join(tmp, 'chatgpt-profile'));
+  assert.deepEqual(launchCalls[0].options, {
+    executablePath: '/installed/google-chrome',
+    headless: false,
+    viewport: null
+  });
+  assert.equal('args' in launchCalls[0].options, false, 'do not add automation-hiding command line flags');
+  assert.equal('userAgent' in launchCalls[0].options, false, 'do not inject a custom user agent');
+  assert.equal('extraHTTPHeaders' in launchCalls[0].options, false, 'do not inject fingerprinting headers');
 
   await manager.openOrFocus();
-  assert.equal(spawnCalls.length, 1);
-  assert.equal(connectCalls.length, 1);
+  assert.equal(launchCalls.length, 1);
+  assert.equal(pages[0]._url, 'https://chatgpt.com/');
 
   const backend = new ChatGPTBrowserBackend(manager);
   const session = await backend.create({ id: 'browser-agent', role: 'explorer', task: '', systemPrompt: 'provider-neutral', model: 'ignored' });
@@ -366,82 +333,31 @@ try {
   await assert.rejects(() => backend.send(session, 'after manual close'), /closed manually/i);
 
   await manager.closeAll();
-  assert.equal(ownedBrowserClosed, 1, 'owned Chrome should be closed through its CDP browser connection on shutdown');
-  assert.equal(spawnCalls[0].options.windowsHide, false);
+  assert.equal(contextCloseCount, 1, 'owned Patchright persistent context should close on shutdown');
 
-  let restartPort;
-  let restartPortReady = false;
-  let restartSpawnCount = 0;
-  let restartChild;
-  let restartBrowser;
-  const restartContext = fakeContext([]);
-  const restartConnectCalls = [];
+  let restartLaunchCount = 0;
+  let restartContext;
   const restartManager = new ChatGPTBrowserManager(
     { ...browserConfig, chatgptBrowserProfilePath: path.join(tmp, 'restart-profile') },
     async () => ({
       chromium: {
-        async connectOverCDP(endpoint) {
-          restartConnectCalls.push(endpoint);
-          restartBrowser = fakeBrowser(restartContext);
-          return restartBrowser;
+        async launchPersistentContext() {
+          restartLaunchCount += 1;
+          restartContext = fakeContext([]);
+          return restartContext;
         }
       }
     }),
     undefined,
-    {
-      discoverChrome: () => '/installed/google-chrome',
-      spawnProcess() {
-        restartSpawnCount += 1;
-        restartPort = 9300 + restartSpawnCount;
-        restartPortReady = true;
-        restartChild = fakeChild(5000 + restartSpawnCount);
-        return restartChild;
-      },
-      async readDebuggingPort() { return restartPort; },
-      async probeDebuggingPort(port) { return restartPortReady && port === restartPort; },
-      sleep: async () => {}
-    }
+    { discoverChrome: () => '/installed/google-chrome' }
   );
   await restartManager.ensureReady();
-  assert.equal(restartSpawnCount, 1);
-  restartBrowser.emit('disconnected');
-  assert.equal(restartManager.getState(), 'running-unattached');
-  restartPortReady = false;
-  restartChild.exitCode = 1;
-  restartChild.emit('exit', 1, null);
+  assert.equal(restartLaunchCount, 1);
+  restartContext.emit('close');
   assert.equal(restartManager.getState(), 'stopped');
   await restartManager.ensureReady();
-  assert.equal(restartSpawnCount, 2, 'Chrome must be restartable after a disconnect/crash');
-  assert.deepEqual(restartConnectCalls, ['http://127.0.0.1:9301', 'http://127.0.0.1:9302']);
+  assert.equal(restartLaunchCount, 2, 'Patchright context must be restartable after a browser close');
   await restartManager.closeAll();
-
-  let externalBrowserClosed = 0;
-  let externalConnectCount = 0;
-  const externalContext = fakeContext([]);
-  const externalManager = new ChatGPTBrowserManager(
-    { ...browserConfig, chatgptBrowserProfilePath: path.join(tmp, 'external-profile') },
-    async () => ({
-      chromium: {
-        async connectOverCDP(endpoint) {
-          externalConnectCount += 1;
-          assert.equal(endpoint, 'http://127.0.0.1:9444');
-          return fakeBrowser(externalContext, () => { externalBrowserClosed += 1; });
-        }
-      }
-    }),
-    undefined,
-    {
-      discoverChrome: () => { throw new Error('must not discover Chrome while a live dedicated profile is reusable'); },
-      spawnProcess: () => { throw new Error('must not spawn duplicate Chrome'); },
-      async readDebuggingPort() { return 9444; },
-      async probeDebuggingPort(port) { return port === 9444; }
-    }
-  );
-  await externalManager.ensureReady();
-  await externalManager.ensureReady();
-  assert.equal(externalConnectCount, 1, 'an existing attached browser must be reused');
-  await externalManager.closeAll();
-  assert.equal(externalBrowserClosed, 0, 'Chrome not launched by this CodexPro process must remain open on shutdown');
 
   const stream = { sent: false, generating: false, reads: 0 };
   const hidden = locator({ visible: false });
@@ -496,16 +412,15 @@ try {
 
   const failed = new ChatGPTBrowserManager(
     { ...browserConfig, chatgptBrowserProfilePath: path.join(tmp, 'failed-profile') },
-    async () => ({ chromium: { async connectOverCDP() { throw new Error('must not attach after failed launch'); } } }),
+    async () => ({
+      chromium: {
+        async launchPersistentContext() { throw new Error('browser boom'); }
+      }
+    }),
     undefined,
-    {
-      discoverChrome: () => '/installed/google-chrome',
-      spawnProcess: () => { throw new Error('browser boom'); },
-      async readDebuggingPort() { return undefined; },
-      async probeDebuggingPort() { return false; }
-    }
+    { discoverChrome: () => '/installed/google-chrome' }
   );
-  await assert.rejects(() => failed.openOrFocus(), /Could not launch.*browser boom/i);
+  await assert.rejects(() => failed.openOrFocus(), /Could not launch.*Patchright.*browser boom/i);
 
   const cliSource = await fs.readFile(path.resolve(oldCwd, 'scripts', 'codexpro.mjs'), 'utf8');
   const httpSource = await fs.readFile(path.resolve(oldCwd, 'src', 'http.ts'), 'utf8');
@@ -516,8 +431,9 @@ try {
   assert.match(cliSource, /Start the CodexPro ChatGPT browser automatically when CodexPro starts\?/);
   assert.match(httpSource, /runtime\.shutdown\(\)/);
   assert.match(runtimeSource, /chatgptBrowserManager\.closeAll\(\)/);
-  assert.match(managerSource, /chromium\.connectOverCDP\(/);
-  assert.doesNotMatch(managerSource, /launchPersistentContext|AutomationControlled|storageState|\.cookies\s*\(/);
+  assert.match(managerSource, /import\("patchright-core"\)/);
+  assert.match(managerSource, /chromium\.launchPersistentContext\(/);
+  assert.doesNotMatch(managerSource, /connectOverCDP|remote-debugging-port|AutomationControlled|storageState|\.cookies\s*\(/);
 
   console.log('chatgpt browser smoke: ok');
 } finally {

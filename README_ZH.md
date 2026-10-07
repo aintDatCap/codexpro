@@ -9,16 +9,16 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/codexpro"><img alt="npm" src="https://img.shields.io/npm/v/codexpro?style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rebel0789/codexpro/ci.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/rebel0789/codexpro?style=flat-square"></a>
-  <a href="https://rebel0789.github.io/codexpro/zh.html"><img alt="中文站点" src="https://img.shields.io/badge/site-%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3-67e8f9?style=flat-square"></a>
+
+  <a href="https://github.com/aintDatCap/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/aintDatCap/codexpro/ci.yml?branch=main&style=flat-square"></a>
+  <a href="https://github.com/aintDatCap/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/aintDatCap/codexpro?style=flat-square"></a>
+  <a href="https://github.com/aintDatCap/codexpro"><img alt="源码" src="https://img.shields.io/badge/source-GitHub-67e8f9?style=flat-square"></a>
 </p>
 
 <p align="center">
   <a href="README.md">English</a>
   ·
-  <a href="https://rebel0789.github.io/codexpro/zh.html">中文网站</a>
+  <a href="https://aintdatcap.github.io/codexpro/zh.html">中文网站</a>
   ·
   <a href="FAQ_ZH.md">中文 FAQ</a>
   ·
@@ -42,7 +42,12 @@ ChatGPT 可以读取、搜索、编辑、审查、验证、导入附件，并写
 - ChatGPT Web 可用的 HTTPS 地址（tunnel 或 Tailscale Funnel）
 
 ```bash
-npm install -g codexpro
+git clone https://github.com/aintDatCap/codexpro.git
+cd codexpro
+npm install
+npm run build
+npm link
+
 cd /path/to/your/repo
 codexpro setup
 ```
@@ -80,6 +85,16 @@ codexpro start
 - 用 `show_changes` 审查 diff 及可能的影响范围
 - 在 `.ai-bridge` 下写计划
 - 为不能调工具的会话导出 context bundle
+
+### 此 fork 新增
+
+- Windows 使用 Hyper-V，Linux 使用 QEMU/KVM，macOS 使用 QEMU/HVF 的一次性 VM。
+- Windows ISO 检测、Secure Boot、vTPM，以及可选的无人值守安装/OOBE 精简。
+- `vm_guest_status`、`vm_exec`、`vm_upload`、`vm_download` 统一 guest 工具。
+- 通过专用可见 Chrome + CDP 的实验性 ChatGPT browser subagents。
+- 跨 MCP 重连保持 logical client/lease/runtime 状态与关联日志。
+
+详见 [VM runtimes](docs/vm.md) 和 [AI VM usage](docs/vm-ai-usage.md)。
 
 ### 内置仓库智能
 
@@ -182,15 +197,17 @@ chmod 600 ~/.codexpro/http-token
 ## 更新
 
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+cd /path/to/codexpro
+git pull --ff-only
+npm install
+npm run build
 ```
 
-更新后重启 `codexpro start`。`~/.codexpro` 下的配置会保留。
+`npm link` 只有在链接被移除时才需要重新运行。更新后重启 `codexpro start`；`~/.codexpro` 下的配置会保留。
 
 ## 文档
 
-- [中文网站](https://rebel0789.github.io/codexpro/zh.html)
+- [GitHub 仓库](https://github.com/aintDatCap/codexpro)
 - [中文 FAQ](FAQ_ZH.md)
 - [Security](SECURITY.md)
 - [路线图](ROADMAP.md)

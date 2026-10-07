@@ -37,4 +37,4 @@ CodexPro aims to be the safest, most reliable bridge between ChatGPT and explici
 - Claims of compiler- or language-server-level certainty from heuristic analysis
 - Silent access outside user-approved workspace roots
 
-Roadmap items are priorities, not release-date promises. Open focused proposals through [GitHub Issues](https://github.com/rebel0789/codexpro/issues).
+Roadmap items are priorities, not release-date promises. Open focused proposals through [GitHub Issues](https://github.com/aintDatCap/codexpro/issues).
