@@ -199,7 +199,8 @@ async function runFullModeStress(root) {
       name: 'search',
       arguments: { workspace_id: ws, query: '--flag', path: 'many', max_results: 2000 }
     });
-    assert(largeSearch.structuredContent.matches.length === 2000, `expected 2000 search matches, got ${largeSearch.structuredContent.matches.length}`);
+    assert(largeSearch.structuredContent.matches.length === 200, `expected structured search output to be capped at 200 matches, got ${largeSearch.structuredContent.matches.length}`);
+    assert(largeSearch.structuredContent.output_limited === true, 'large search did not report structured output limiting');
     assert(largeSearch.structuredContent.truncated === true, 'large search did not report truncation');
     assert(!('text' in largeSearch.structuredContent), 'search duplicated text in structuredContent with cards off');
 

@@ -9,6 +9,17 @@ import { noopLogger } from "./logging.js";
 import { redactSensitiveText } from "./redact.js";
 
 const CHATGPT_HOME = "https://chatgpt.com/";
+const CHATGPT_ASSISTANT_SELECTORS = [
+  '[data-testid^="conversation-turn-"][data-turn="assistant"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"]):not([data-turn-key] *)',
+  '[data-conversation-role="assistant"]',
+  '[data-turn-key]:has([data-conversation-role="assistant"], [data-chatgpt-agent-turn-start])',
+  '[data-message-author-role="assistant"]',
+  '[data-role="assistant"]',
+  '[data-message-author="assistant"]',
+  '.agent-turn'
+] as const;
 
 type PatchrightLoader = () => Promise<any>;
 
@@ -187,6 +198,7 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
   private async waitForComposer(timeoutMs = 20_000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (this.page.isClosed?.()) throw new CodexProError("The ChatGPT browser tab was closed while the subagent was running.");
       const composer = await this.composer();
       if (composer) return composer;
       const reason = await this.manualInteractionReason();
@@ -207,8 +219,15 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
     }
   }
 
-  private assistantMessages(): any {
-    return this.page.locator?.('[data-message-author-role="assistant"]');
+  private async assistantMessages(): Promise<any> {
+    for (const selector of CHATGPT_ASSISTANT_SELECTORS) {
+      const locator = this.page.locator?.(selector);
+      if (!locator) continue;
+      try {
+        if (Number(await locator.count?.()) > 0) return locator;
+      } catch {}
+    }
+    return this.page.locator?.(CHATGPT_ASSISTANT_SELECTORS[0]);
   }
 
   private async stopButton(): Promise<any | undefined> {
@@ -221,7 +240,7 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
   }
 
   private async submit(prompt: string): Promise<number> {
-    const assistants = this.assistantMessages();
+    const assistants = await this.assistantMessages();
     let before = 0;
     try { before = Number(await assistants?.count?.()) || 0; } catch {}
     const composer = await this.waitForComposer();
@@ -252,6 +271,7 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
     let sawAssistant = false;
 
     while (Date.now() < deadline) {
+      if (this.page.isClosed?.()) throw new CodexProError("The ChatGPT browser tab was closed while the subagent was running.");
       if (signal?.aborted) {
         await this.cancel();
         throw new DOMException("Subagent cancelled", "AbortError");
@@ -261,7 +281,7 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
       const activeConversationUrl = conversationUrlFrom(this.currentUrl());
       if (activeConversationUrl) onConversationUrl?.(activeConversationUrl);
 
-      const assistants = this.assistantMessages();
+      const assistants = await this.assistantMessages();
       let count = 0;
       try { count = Number(await assistants?.count?.()) || 0; } catch {}
       if (count > before) {
@@ -432,8 +452,11 @@ export class ChatGPTBrowserManager {
   async openOrFocus(): Promise<{ running: true; url: string }> {
     const context = await this.ensureReady();
     const existingPages = context.pages?.() ?? [];
-    let page = existingPages.find((candidate: any) => String(candidate.url?.() ?? "").startsWith("https://chatgpt.com/"));
-    if (!page) page = existingPages[0] ?? await context.newPage();
+    const workerPages = new Set([...this.pages.values()].map((entry) => entry.page));
+    let page = existingPages.find((candidate: any) =>
+      !workerPages.has(candidate) && String(candidate.url?.() ?? "").startsWith("https://chatgpt.com/")
+    );
+    if (!page) page = existingPages.find((candidate: any) => !workerPages.has(candidate)) ?? await context.newPage();
     const current = String(page.url?.() ?? "");
     if (!current.startsWith("https://chatgpt.com/")) {
       await page.goto(CHATGPT_HOME, { waitUntil: "domcontentloaded", timeout: 30_000 });

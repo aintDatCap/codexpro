@@ -52,7 +52,6 @@ try {
   process.env.CODEXPRO_HOME = path.join(tmp, '.codexpro-home');
   process.env.CODEXPRO_ROOT = tmp;
   process.env.CODEXPRO_ALLOWED_ROOTS = tmp;
-  process.env.CODEXPRO_SUBAGENTS_ENABLED = '1';
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.OPENAI_API_KEY;
 
@@ -78,8 +77,6 @@ try {
     /CODEXPRO_CHROME_PATH/i
   );
 
-  process.env.CODEXPRO_SUBAGENT_PROVIDER = 'chatgpt-browser';
-  process.env.CODEXPRO_CHATGPT_BROWSER_AUTO_START = '1';
   const browserConfig = loadConfig([]);
   const browserConfigAgain = loadConfig([]);
   assert.equal(browserConfig.subagentsEnabled, true);
@@ -87,6 +84,7 @@ try {
   assert.equal(browserConfig.chatgptBrowserAutoStart, true);
   assert.equal(browserConfig.chatgptBrowserProfilePath, path.join(process.env.CODEXPRO_HOME, 'chatgpt-browser'));
   assert.equal(browserConfigAgain.chatgptBrowserProfilePath, browserConfig.chatgptBrowserProfilePath);
+  assert.equal(toolNamesForMode({ ...browserConfig, toolMode: 'standard' }).some((name) => name.startsWith('subagent_')), true);
   assert.equal(toolNamesForMode({ ...browserConfig, toolMode: 'full' }).some((name) => name.startsWith('subagent_')), true);
   assert.equal(createAgentBackend(browserConfig)?.backend.name, 'chatgpt-browser');
 
@@ -232,10 +230,11 @@ try {
     const page = new EventEmitter();
     page._url = 'about:blank';
     page._closed = false;
+    page._focusCount = 0;
     page.url = function url() { return this._url; };
     page.isClosed = function isClosed() { return this._closed; };
     page.goto = async function goto(url) { this._url = url; };
-    page.bringToFront = async function bringToFront() {};
+    page.bringToFront = async function bringToFront() { this._focusCount += 1; };
     page.close = async function close() {
       if (this._closed) return;
       this._closed = true;
@@ -276,6 +275,7 @@ try {
     }),
     (page) => {
       let turns = 0;
+      const adapterNumber = adapters.length + 1;
       const adapter = {
         cancelled: false,
         currentUrl() { return page._url; },
@@ -283,7 +283,7 @@ try {
         async send() {
           turns += 1;
           await Promise.resolve();
-          page._url = 'https://chatgpt.com/c/fake-browser-agent';
+          page._url = `https://chatgpt.com/c/fake-browser-agent-${adapterNumber}`;
           return { content: turns === 1 ? 'streamed answer' : 'follow-up answer', conversationUrl: page._url };
         },
         async cancel() { this.cancelled = true; }
@@ -321,8 +321,19 @@ try {
   const secondSession = await backend.create({ id: 'browser-agent-2', role: 'reviewer', task: '', systemPrompt: 'second', model: 'ignored' });
   assert.equal(pages.length, 3, 'main page plus one separate worker tab per agent');
   assert.notEqual(session.pageId, secondSession.pageId);
+  const workerFocusBeforeOpen = pages.slice(1).map((page) => page._focusCount);
+  await manager.openOrFocus();
+  assert.deepEqual(
+    pages.slice(1).map((page) => page._focusCount),
+    workerFocusBeforeOpen,
+    'manual browser open/focus must never steal focus from a worker tab'
+  );
+  assert.ok(pages[0]._focusCount > 0, 'manual browser open/focus should use the non-worker control tab');
   assert.equal((await backend.send(session, 'first')).content, 'streamed answer');
-  assert.equal(session.externalConversation?.url, 'https://chatgpt.com/c/fake-browser-agent');
+  assert.equal(session.externalConversation?.url, 'https://chatgpt.com/c/fake-browser-agent-1');
+  assert.equal((await backend.send(secondSession, 'review')).content, 'streamed answer');
+  assert.equal(secondSession.externalConversation?.url, 'https://chatgpt.com/c/fake-browser-agent-2');
+  assert.notEqual(session.externalConversation?.url, secondSession.externalConversation?.url);
   await backend.send(session, 'second');
   assert.equal(pages.length, 3, 'subagent_message must reuse the same worker page');
   assert.equal(adapters.length, 2);
@@ -386,7 +397,7 @@ try {
       return hidden;
     },
     locator(selector) {
-      if (selector === '[data-message-author-role="assistant"]') return assistant;
+      if (selector.includes('[data-turn="assistant"]')) return assistant;
       if (selector === 'body') return locator({ text: '' });
       return hidden;
     }
@@ -394,6 +405,32 @@ try {
   const webAdapter = new ChatGPTWebPageAdapter(streamingPage, 5000);
   await webAdapter.prepareFreshConversation();
   assert.equal((await webAdapter.send('stream')).content, 'hello');
+
+  const closingState = { closed: false };
+  const closingComposer = locator({ visible: true });
+  const closingSend = locator({ visible: true });
+  const closingPage = {
+    _url: 'https://chatgpt.com/',
+    url() { return this._url; },
+    isClosed() { return closingState.closed; },
+    async goto(url) { this._url = url; },
+    async bringToFront() {},
+    getByRole(role, options) {
+      if (role === 'textbox') return closingComposer;
+      const source = options?.name?.source ?? '';
+      if (/send|submit/i.test(source)) return closingSend;
+      return hidden;
+    },
+    locator(selector) {
+      if (selector === 'body') return locator({ text: '' });
+      return hidden;
+    }
+  };
+  const closingAdapter = new ChatGPTWebPageAdapter(closingPage, 5000);
+  await closingAdapter.prepareFreshConversation();
+  const closingSendPromise = closingAdapter.send('close during send');
+  setTimeout(() => { closingState.closed = true; }, 20);
+  await assert.rejects(closingSendPromise, /tab was closed while the subagent was running/i);
 
   const loginPage = {
     url() { return 'https://chatgpt.com/'; },

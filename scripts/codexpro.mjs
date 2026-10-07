@@ -3277,7 +3277,7 @@ function profileFromPreference(root, args, profile, preference) {
   const write = optionalWriteOption(args, profile, mode);
   const toolMode = optionValue(args, profile, 'toolMode', ['CODEXPRO_TOOL_MODE'], '');
   const subagentProvider = optionValue(args, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], '');
-  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], false);
+  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], true);
   const widgetDomain = optionValue(args, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], '');
   const existingToken = optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], '');
   const token = preference.tunnel === 'none' ? existingToken : stableToken(existingToken);
@@ -3408,9 +3408,9 @@ async function runSetupWizard(argv) {
     const modeAnswer = await ask(rl, 'Mode: agent, handoff, or pro?', defaultMode);
     const mode = normalizeSetupChoice(modeAnswer, ['agent', 'handoff', 'pro'], defaultMode);
     const defaultSubagentProvider = normalizeSetupChoice(
-      optionValue(defaults, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], process.env.DEEPSEEK_API_KEY?.trim() ? 'deepseek' : 'chatgpt-browser'),
+      optionValue(defaults, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], 'chatgpt-browser'),
       ['chatgpt-browser', 'deepseek', 'off'],
-      process.env.DEEPSEEK_API_KEY?.trim() ? 'deepseek' : 'chatgpt-browser'
+      'chatgpt-browser'
     );
     const providerAnswer = await ask(rl, 'Subagent provider: chatgpt-browser, deepseek, or off?', defaultSubagentProvider);
     const subagentProvider = normalizeSetupChoice(providerAnswer, ['chatgpt-browser', 'deepseek', 'off'], defaultSubagentProvider);
@@ -3648,7 +3648,7 @@ function saveSettingsFromArgs(root, args, profile) {
   }
   const toolMode = optionalChoice('tool-mode', optionValue(args, profile, 'toolMode', ['CODEXPRO_TOOL_MODE'], profile.toolMode ?? ''), ['minimal', 'standard', 'full']);
   const subagentProvider = optionalChoice('subagent-provider', optionValue(args, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], profile.subagentProvider ?? ''), ['chatgpt-browser', 'deepseek', 'off']);
-  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], false);
+  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], true);
   const widgetDomain = optionValue(args, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], profile.widgetDomain ?? '');
   const port = normalizePort(optionValue(args, profile, 'port', ['CODEXPRO_PORT'], profile.port ?? '8787'));
   const bashTranscript = bashTranscriptOption(args, profile);
@@ -4128,8 +4128,8 @@ async function main() {
   const { bashSession, requireBashSession } = bashSessionOptions(args, profile);
   const write = writeOption(args, profile, mode);
   const toolMode = optionValue(args, profile, 'toolMode', ['CODEXPRO_TOOL_MODE'], 'standard');
-  const subagentProvider = optionValue(args, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], process.env.DEEPSEEK_API_KEY?.trim() ? 'deepseek' : 'off');
-  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], false);
+  const subagentProvider = optionValue(args, profile, 'subagentProvider', ['CODEXPRO_SUBAGENT_PROVIDER'], 'chatgpt-browser');
+  const chatgptBrowserAutoStart = optionBool(args, profile, 'chatgptBrowserAutoStart', ['CODEXPRO_CHATGPT_BROWSER_AUTO_START'], true);
   const widgetDomain = optionValue(args, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], 'https://rebel0789.github.io');
   const toolCards = optionBool(args, profile, 'toolCards', ['CODEXPRO_TOOL_CARDS'], false);
   validateChoice('bash', bash, ['off', 'safe', 'full']);

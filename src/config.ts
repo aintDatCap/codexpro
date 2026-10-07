@@ -224,7 +224,7 @@ function toolModeFrom(value: string | undefined): ToolMode {
 
 function subagentProviderFrom(value: string | undefined, deepseekApiKey: string | undefined): SubagentProvider {
   if (value === "chatgpt-browser" || value === "deepseek" || value === "off") return value;
-  return deepseekApiKey ? "deepseek" : "off";
+  return "chatgpt-browser";
 }
 
 function codexProDataPath(...parts: string[]): string {
@@ -424,7 +424,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     deepseekModel: process.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat",
     subagentProvider,
     subagentsEnabled: boolFrom(process.env.CODEXPRO_SUBAGENTS_ENABLED, true) && subagentProvider !== "off" && (subagentProvider !== "deepseek" || Boolean(deepseekApiKey)),
-    chatgptBrowserAutoStart: boolFrom(process.env.CODEXPRO_CHATGPT_BROWSER_AUTO_START, false),
+    chatgptBrowserAutoStart: boolFrom(process.env.CODEXPRO_CHATGPT_BROWSER_AUTO_START, true),
     chatgptBrowserProfilePath,
     chatgptBrowserExecutable: process.env.CODEXPRO_CHROME_PATH?.trim() || process.env.CODEXPRO_CHATGPT_BROWSER_EXECUTABLE?.trim() || undefined,
     chatgptBrowserResponseTimeoutMs: numberFrom(process.env.CODEXPRO_CHATGPT_BROWSER_RESPONSE_TIMEOUT_MS, 180_000, 10_000, 600_000),

@@ -441,7 +441,12 @@ const STANDARD_TOOL_NAMES = [
   "vm_upload",
   "vm_download",
   "vm_guest_status",
-  "browser"
+  "browser",
+  "subagent_spawn",
+  "subagent_message",
+  "subagent_status",
+  "subagent_result",
+  "subagent_cancel"
 ] as const;
 
 const FULL_TOOL_NAMES = [
