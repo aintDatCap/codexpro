@@ -9,16 +9,24 @@ import { noopLogger } from "./logging.js";
 import { redactSensitiveText } from "./redact.js";
 
 const CHATGPT_HOME = "https://chatgpt.com/";
-const CHATGPT_ASSISTANT_SELECTORS = [
-  '[data-testid^="conversation-turn-"][data-turn="assistant"]:not([data-turn-key] *)',
-  '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]:not([data-turn-key] *)',
-  '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"]):not([data-turn-key] *)',
-  '[data-conversation-role="assistant"]',
-  '[data-turn-key]:has([data-conversation-role="assistant"], [data-chatgpt-agent-turn-start])',
+const CHATGPT_ASSISTANT_TURN_SELECTORS = [
+  'section[data-turn="assistant"]',
+  'article[data-turn="assistant"]',
+  '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-message-author-role="assistant"]',
+  '[data-chatgpt-search-unit-key$=":assistant"]',
+  '[data-turn-key]:has([data-markdown-text-style="assistant-message"])',
+  '[data-markdown-text-style="assistant-message"]:not([data-markdown-text-tone="tertiary"])',
   '[data-role="assistant"]',
   '[data-message-author="assistant"]',
   '.agent-turn'
+] as const;
+
+const CHATGPT_ASSISTANT_CONTENT_SELECTORS = [
+  '.markdown',
+  '.prose',
+  '[data-markdown-text-style="assistant-message"]:not([data-markdown-text-tone="tertiary"])',
+  '[class*="markdown"]'
 ] as const;
 
 type PatchrightLoader = () => Promise<any>;
@@ -185,13 +193,18 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
   }
 
   private async manualInteractionReason(): Promise<string | undefined> {
-    const login = this.page.getByRole?.("button", { name: /log in|sign in/i });
-    if (await visible(login)) return "ChatGPT authentication is required.\n\nPress b to open the CodexPro browser and sign in manually.";
     let body = "";
     try { body = String(await this.page.locator?.("body")?.innerText?.()); } catch {}
     if (/captcha|verify you are human|checking your browser|unusual activity|account restriction/i.test(body)) {
       return "ChatGPT requires manual browser interaction.\n\nPress b to open the CodexPro browser and complete the check manually.";
     }
+
+    // ChatGPT may render a Log in button even while an anonymous/authenticated
+    // composer is usable. Treat authentication as blocking only when there is
+    // no usable composer on the page.
+    if (await this.composer()) return undefined;
+    const login = this.page.getByRole?.("button", { name: /log in|sign in/i });
+    if (await visible(login)) return "ChatGPT authentication is required.\n\nPress b to open the CodexPro browser and sign in manually.";
     return undefined;
   }
 
@@ -220,14 +233,46 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
   }
 
   private async assistantMessages(): Promise<any> {
-    for (const selector of CHATGPT_ASSISTANT_SELECTORS) {
+    for (const selector of CHATGPT_ASSISTANT_TURN_SELECTORS) {
       const locator = this.page.locator?.(selector);
       if (!locator) continue;
       try {
         if (Number(await locator.count?.()) > 0) return locator;
       } catch {}
     }
-    return this.page.locator?.(CHATGPT_ASSISTANT_SELECTORS[0]);
+    return this.page.locator?.(CHATGPT_ASSISTANT_TURN_SELECTORS[0]);
+  }
+
+  private async assistantText(assistants: any): Promise<string> {
+    if (!assistants) return "";
+    const turn = assistants.last?.() ?? assistants;
+    for (const selector of CHATGPT_ASSISTANT_CONTENT_SELECTORS) {
+      const content = turn.locator?.(selector);
+      if (!content) continue;
+      try {
+        if (Number(await content.count?.()) <= 0) continue;
+        if (typeof content.allInnerTexts === "function") {
+          const chunks = (await content.allInnerTexts()).map((value: unknown) => String(value).trim()).filter(Boolean);
+          if (chunks.length) return chunks.join("\n\n").trim();
+        }
+        const text = (await locatorText(content)).trim();
+        if (text) return text;
+      } catch {}
+    }
+
+    // Last-resort fallback for DOM variants without a markdown wrapper. Remove
+    // the screen-reader heading that otherwise looks like the whole answer.
+    const text = (await locatorText(assistants)).trim();
+    return text.replace(/^(?:ChatGPT|Assistant)\s+(?:said|ha detto)\s*:?\s*/i, "").trim();
+  }
+
+  private async responseComplete(assistants: any): Promise<boolean> {
+    const turn = assistants?.last?.() ?? assistants;
+    const copyAction = turn?.locator?.('[data-testid="copy-turn-action-button"]');
+    try {
+      if (Number(await copyAction?.count?.()) > 0) return true;
+    } catch {}
+    return !(await this.stopButton());
   }
 
   private async stopButton(): Promise<any | undefined> {
@@ -286,12 +331,12 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
       try { count = Number(await assistants?.count?.()) || 0; } catch {}
       if (count > before) {
         sawAssistant = true;
-        const text = (await locatorText(assistants)).trim();
-        const stopVisible = Boolean(await this.stopButton());
-        if (text && text === lastText && !stopVisible) stableTicks += 1;
+        const text = (await this.assistantText(assistants)).trim();
+        const complete = await this.responseComplete(assistants);
+        if (text && text === lastText && complete) stableTicks += 1;
         else stableTicks = 0;
         lastText = text;
-        if (text && stableTicks >= 3) {
+        if (text && stableTicks >= 2) {
           return { content: redactSensitiveText(text), conversationUrl: conversationUrlFrom(this.currentUrl()) };
         }
       }

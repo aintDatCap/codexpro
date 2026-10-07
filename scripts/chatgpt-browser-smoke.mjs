@@ -34,13 +34,18 @@ async function waitFor(predicate, message, timeoutMs = 3000) {
   assert.fail(message);
 }
 
-function locator({ visible = false, count = 0, text = '', click, fill } = {}) {
+function locator({ visible = false, count = 0, text = '', click, fill, children = {} } = {}) {
   return {
     first() { return this; },
     last() { return this; },
+    locator(selector) { return children[selector]; },
     async isVisible() { return typeof visible === 'function' ? visible() : visible; },
     async count() { return typeof count === 'function' ? count() : count; },
     async innerText() { return typeof text === 'function' ? text() : text; },
+    async allInnerTexts() {
+      const value = typeof text === 'function' ? text() : text;
+      return value ? [value] : [];
+    },
     async click() { if (click) return click(); },
     async fill(value) { if (fill) return fill(value); },
     async press() {}
@@ -375,13 +380,22 @@ try {
   const composer = locator({ visible: true });
   const send = locator({ visible: true, click() { stream.sent = true; stream.generating = true; } });
   const stop = locator({ visible: () => stream.generating });
-  const assistant = locator({
+  const copyAction = locator({ count: () => stream.sent && !stream.generating ? 1 : 0 });
+  const assistantMarkdown = locator({
     count: () => stream.sent ? 1 : 0,
     text: () => {
       stream.reads += 1;
       if (stream.reads === 1) return 'hel';
       if (stream.reads >= 3) stream.generating = false;
       return 'hello';
+    }
+  });
+  const assistant = locator({
+    count: () => stream.sent ? 1 : 0,
+    text: () => stream.sent ? 'ChatGPT ha detto:\nhello' : '',
+    children: {
+      '.markdown': assistantMarkdown,
+      '[data-testid="copy-turn-action-button"]': copyAction
     }
   });
   const streamingPage = {
@@ -394,17 +408,53 @@ try {
       const source = options?.name?.source ?? '';
       if (/send|submit/i.test(source)) return send;
       if (/stop/i.test(source)) return stop;
+      if (/log in|sign in/i.test(source)) return locator({ visible: true });
       return hidden;
     },
     locator(selector) {
-      if (selector.includes('[data-turn="assistant"]')) return assistant;
-      if (selector === 'body') return locator({ text: '' });
+      if (selector === 'section[data-turn="assistant"]') return assistant;
+      if (selector === 'body') return locator({ text: 'Log in' });
       return hidden;
     }
   };
   const webAdapter = new ChatGPTWebPageAdapter(streamingPage, 5000);
   await webAdapter.prepareFreshConversation();
   assert.equal((await webAdapter.send('stream')).content, 'hello');
+
+  const workStream = { sent: false, reads: 0 };
+  const workComposer = locator({ visible: true });
+  const workSend = locator({ visible: true, click() { workStream.sent = true; } });
+  const workAssistant = locator({
+    count: () => workStream.sent ? 1 : 0,
+    text: () => {
+      workStream.reads += 1;
+      return workStream.reads === 1 ? 'PACKAGE=codexpro' : 'PACKAGE=codexpro VERSION=0.30.2';
+    }
+  });
+  const workLayoutPage = {
+    _url: 'https://chatgpt.com/',
+    url() { return this._url; },
+    async goto(url) { this._url = url; },
+    async bringToFront() {},
+    getByRole(role, options) {
+      if (role === 'textbox') return workComposer;
+      const source = options?.name?.source ?? '';
+      if (/send|submit/i.test(source)) return workSend;
+      return hidden;
+    },
+    locator(selector) {
+      if (selector === '[data-markdown-text-style="assistant-message"]:not([data-markdown-text-tone="tertiary"])') return workAssistant;
+      if (selector === 'body') return locator({ text: '' });
+      return hidden;
+    }
+  };
+  const workAdapter = new ChatGPTWebPageAdapter(workLayoutPage, 5000);
+  await workAdapter.prepareFreshConversation();
+  assert.equal(
+    (await workAdapter.send('work layout')).content,
+    'PACKAGE=codexpro VERSION=0.30.2',
+    'ChatGPT Work layout must be detected without legacy assistant wrappers'
+  );
 
   const closingState = { closed: false };
   const closingComposer = locator({ visible: true });
