@@ -213,13 +213,14 @@ export class HypervBackend implements VmBackend {
           await this.createVm(record, disk, options.secureBoot ?? "off", iso, unattendIso);
           const identity = await this.identity(await this.instances.read(record.id));
           if (options.windowsUnattend) {
-            options.onProgress?.(`Windows installer ${record.id} (${identity.vmId}) is prepared for unattended setup. In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. CodexPro will wipe only this newly created VM disk, partition it, skip Microsoft-account/network/privacy OOBE pages, and create local Administrator "${options.windowsUnattend.username}". If the source ISO contains multiple Windows editions, Setup may still ask you to choose one. The account starts with a blank password and Windows will require changing it at first sign-in. Shut down the guest when installation is complete. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
+            options.onProgress?.(`Windows installer ${record.id} (${identity.vmId}) is prepared for unattended setup. In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. CodexPro will wipe only this newly created VM disk, partition it, skip Microsoft-account/network/privacy OOBE pages, and create local Administrator "${options.windowsUnattend.username}". If the source ISO contains multiple Windows editions, Setup may still ask you to choose one. The account starts with a blank password and Windows will require changing it at first sign-in. Shut down the guest when installation is complete. You can also type finish in the CodexPro terminal once the guest is off. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
           } else {
-            options.onProgress?.(`Installer ${record.id} (${identity.vmId}). In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. If the UEFI boot summary appears, click Restart now and press Space immediately. Complete installation, then shut down the guest. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
+            options.onProgress?.(`Installer ${record.id} (${identity.vmId}). In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. If the UEFI boot summary appears, click Restart now and press Space immediately. Complete installation, then shut down the guest. You can also type finish in the CodexPro terminal once the guest is off. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
           }
           await this.ps.run("console", identity);
           const deadline = Date.now() + 4 * 60 * 60_000;
           let started = false;
+          let waitingForShutdown = false;
           for (;;) {
             if (interrupted) throw new Error("ISO installation interrupted");
             if (Date.now() >= deadline) throw new Error("ISO installation timed out after 4 hours");
@@ -228,7 +229,12 @@ export class HypervBackend implements VmBackend {
               started = true;
               await this.instances.update(record.id, { state: "running" });
             }
-            if (status.state === "Off" && started) break;
+            const finishRequested = options.finishRequested?.() ?? false;
+            if (status.state === "Off" && (started || finishRequested)) break;
+            if (finishRequested && !waitingForShutdown) {
+              waitingForShutdown = true;
+              options.onProgress?.("Finish requested. Shut down the guest from inside the VM before CodexPro can safely import its disk.");
+            }
             if (hypervState(status.state) === "failed") throw new Error(`Installer entered unexpected state ${status.state}`);
             await new Promise(resolve => setTimeout(resolve, 2000));
           }

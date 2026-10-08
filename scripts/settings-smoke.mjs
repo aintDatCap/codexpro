@@ -596,6 +596,41 @@ if (runInteractiveQuit([
   }
 }
 
+// Exercise the q -> IPC -> HTTP runtime shutdown path with piped stdin on every platform.
+const pipeQuitRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-pipe-quit-'));
+const pipeQuitPort = await getFreePort();
+const pipeQuitRuntimePath = await runtimeStatusPath(pipeQuitRoot, home);
+await withStartedCodexPro([
+  '--root', pipeQuitRoot, '--tunnel', 'none', '--port', String(pipeQuitPort),
+  '--no-copy-url', '--no-chatgpt-browser-auto-start'
+], env, async (child) => {
+  const runtime = await waitForJson(pipeQuitRuntimePath, (value) => Number.isInteger(value.runtimePid), 'piped quit runtime');
+  const exit = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('piped q did not stop CodexPro')), 15_000);
+    timer.unref();
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+  child.stdin.write('q\n');
+  const result = await exit;
+  if (result.code !== 0) throw new Error(`piped q exit code ${result.code}, signal ${result.signal}`);
+  await waitForProcessExit(runtime.runtimePid, 'graceful HTTP runtime');
+  try {
+    await fs.access(pipeQuitRuntimePath);
+    throw new Error('runtime status was not cleared after piped q exit');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+});
+const pipeQuitLogs = path.join(home, 'logs', createHash('sha256').update(await fs.realpath(pipeQuitRoot)).digest('hex').slice(0, 24));
+const shutdownLogFiles = (await fs.readdir(pipeQuitLogs, { recursive: true })).filter((name) => name.endsWith('.jsonl'));
+const shutdownLogs = (await Promise.all(shutdownLogFiles.map((name) => fs.readFile(path.join(pipeQuitLogs, name), 'utf8')))).join('\n');
+if (!shutdownLogs.includes('"runtime_shutdown_requested"') || !shutdownLogs.includes('"http_server_closed"')) {
+  throw new Error('piped q did not trigger graceful HTTP runtime shutdown before exit');
+}
+
 const cloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-'));
 const cloudflarePort = await getFreePort();
 const cloudflarePath = await runtimeStatusPath(cloudflareRoot, home);

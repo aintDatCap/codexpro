@@ -2005,6 +2005,9 @@ async function main(): Promise<void> {
   process.once("exit", (code) => logger.info("runtime_process_exit", { exit_code: code }));
   process.once("SIGINT", () => { void shutdown(130); });
   process.once("SIGTERM", () => { void shutdown(143); });
+  process.on("message", (message: unknown) => {
+    if (message === "codexpro:shutdown") void shutdown(0);
+  });
 }
 
 main().catch((error) => {

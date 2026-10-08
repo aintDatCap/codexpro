@@ -280,20 +280,45 @@ async function setupCommand(runtime, args) {
     }
   }
 
-  const manifest = await manager.setupImage({
-    name,
-    sourcePath: resolvedImage,
-    architecture: runtime.normalizeArchitecture(String(architecture)),
-    cpus: positiveInteger(cpus, '--cpus', defaultCpus),
-    memoryMb: positiveInteger(memory, '--memory', defaultMemory),
-    desktop: Boolean(desktop),
-    ...(process.platform === 'win32' ? { secureBoot: secureBootMode(secureBoot, windowsInstaller ? 'windows' : 'off') } : {}),
-    ...(windowsUnattend ? { windowsUnattend } : {}),
-    validate: Boolean(validate),
-    diskSizeGb: positiveInteger(diskSize, '--disk-size', defaultDiskSize),
-    headless: Boolean(args.headless),
-    onProgress: (message) => console.log(`\n${message}\n`)
-  });
+  let finishRequested = false;
+  const finishTerminal = process.platform === 'win32' && isInstallerIso && process.stdin.isTTY
+    ? createInterface({ input: process.stdin, output: process.stdout })
+    : undefined;
+  if (finishTerminal) {
+    console.log('When installation is complete, shut down the guest and type finish here (then press Enter).');
+    finishTerminal.on('SIGINT', () => {
+      console.log('\nCancelling VM setup...');
+      process.emit('SIGINT');
+    });
+    finishTerminal.on('line', (line) => {
+      if (line.trim().toLowerCase() === 'finish') {
+        finishRequested = true;
+        console.log('Finish requested; CodexPro will import only after the VM is powered off.');
+      } else if (line.trim()) {
+        console.log('Type finish to conclude installation, or Ctrl+C to cancel.');
+      }
+    });
+  }
+  let manifest;
+  try {
+    manifest = await manager.setupImage({
+      name,
+      sourcePath: resolvedImage,
+      architecture: runtime.normalizeArchitecture(String(architecture)),
+      cpus: positiveInteger(cpus, '--cpus', defaultCpus),
+      memoryMb: positiveInteger(memory, '--memory', defaultMemory),
+      desktop: Boolean(desktop),
+      ...(process.platform === 'win32' ? { secureBoot: secureBootMode(secureBoot, windowsInstaller ? 'windows' : 'off') } : {}),
+      ...(windowsUnattend ? { windowsUnattend } : {}),
+      validate: Boolean(validate),
+      diskSizeGb: positiveInteger(diskSize, '--disk-size', defaultDiskSize),
+      headless: Boolean(args.headless),
+      ...(finishTerminal ? { finishRequested: () => finishRequested } : {}),
+      onProgress: (message) => console.log(`\n${message}\n`)
+    });
+  } finally {
+    finishTerminal?.close();
+  }
 
   console.log(`VM image installed: ${manifest.name}`);
   console.log(`VM storage            ${resolvedVmHome}`);

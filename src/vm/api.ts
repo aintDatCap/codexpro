@@ -27,6 +27,8 @@ export interface SetupVmImageOptions {
   diskSizeGb?: number;
   headless?: boolean;
   onProgress?: (message: string) => void;
+  /** Explicit terminal confirmation that interactive ISO installation is complete. */
+  finishRequested?: () => boolean;
 }
 
 export interface CreateVmOptions {

@@ -1197,12 +1197,12 @@ async function assertPortAvailable(host, port) {
 const spawnedChildren = new Set();
 
 function spawnLogged(name, command, args, options = {}) {
-  const { verbose = false, ...spawnOptions } = options;
+  const { verbose = false, ipc = false, ...spawnOptions } = options;
   const invocation = processInvocation(command, args);
   const child = spawn(invocation.command, invocation.args, {
     ...spawnOptions,
     windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments
   });
   child.codexproKillTree = Boolean(invocation.killTree);
@@ -1360,6 +1360,34 @@ function cleanupChildren() {
   for (const child of spawnedChildren) killProcess(child);
 }
 
+// Allow the HTTP runtime to close its Chrome context before termination.
+function requestGracefulRuntimeShutdown(child, timeoutMs = 10_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  if (!child.connected || typeof child.send !== 'function') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (completed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      resolve(completed);
+    };
+    const onExit = () => finish(true);
+    const onError = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once('exit', onExit);
+    child.once('error', onError);
+    try {
+      child.send('codexpro:shutdown', (error) => {
+        if (error) finish(false);
+      });
+    } catch {
+      finish(false);
+    }
+  });
+}
 function endpointWithToken(endpoint, token) {
   if (!token) return endpoint;
   const url = new URL(endpoint);
@@ -3865,6 +3893,15 @@ function writeControlPrompt() {
 }
 
 function runControlPanel(details, cleanup = cleanupChildren) {
+  let stopping = false;
+  const stop = (code) => {
+    if (stopping) return;
+    stopping = true;
+    void Promise.resolve().then(() => cleanup()).catch((error) => {
+      console.error(`CodexPro shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      cleanupChildren();
+    }).finally(() => process.exit(code));
+  };
   if (!process.stdin.isTTY) {
     process.stdin.setEncoding('utf8');
     process.stdin.resume();
@@ -3872,8 +3909,7 @@ function runControlPanel(details, cleanup = cleanupChildren) {
       process.stdin.on('data', (input) => {
         const normalized = String(input).trim().toLowerCase();
         if (normalized === 'q') {
-          cleanup();
-          process.exit(0);
+          stop(0);
         }
       });
     });
@@ -3889,8 +3925,7 @@ function runControlPanel(details, cleanup = cleanupChildren) {
     process.stdin.on('data', (key) => {
       if (key === '\u0003') {
         console.log('\nStopping CodexPro...');
-        cleanup();
-        process.exit(130);
+        stop(130);
       }
       const normalized = key.toLowerCase();
       if (key === '\r' || key === '\n') {
@@ -3947,8 +3982,7 @@ function runControlPanel(details, cleanup = cleanupChildren) {
         writeControlPrompt();
       } else if (normalized === 'q') {
         console.log('\nStopping CodexPro...');
-        cleanup();
-        process.exit(0);
+        stop(0);
       }
     });
   });
@@ -4221,16 +4255,25 @@ async function main() {
 
   const verboseLogs = Boolean(args.logRequests || process.env.CODEXPRO_LOG_REQUESTS === '1');
   statusLine('wait', 'Starting local MCP server');
-  const server = spawnLogged('codexpro', process.execPath, [httpPath], { cwd: projectRoot, env: serverEnv, verbose: verboseLogs });
+  const server = spawnLogged('codexpro', process.execPath, [httpPath], { cwd: projectRoot, env: serverEnv, verbose: verboseLogs, ipc: true });
   let cloudflared;
   let cleanupTunnelCredentials = () => {};
+  let cleanupPromise;
   const cleanup = () => {
-    cleanupTunnelCredentials();
-    cleanupChildren();
-    clearRuntimeConnection(root);
+    if (!cleanupPromise) {
+      cleanupPromise = (async () => {
+        if (!await requestGracefulRuntimeShutdown(server)) {
+          console.warn('CodexPro HTTP shutdown did not complete; forcing remaining processes to stop.');
+        }
+        cleanupTunnelCredentials();
+        cleanupChildren();
+        clearRuntimeConnection(root);
+      })();
+    }
+    return cleanupPromise;
   };
-  process.on('SIGINT', () => { cleanup(); process.exit(130); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  process.on('SIGINT', () => { void cleanup().finally(() => process.exit(130)); });
+  process.on('SIGTERM', () => { void cleanup().finally(() => process.exit(143)); });
 
   await waitForHealth(`${localBase}/healthz`, token);
   statusLine('ok', `Local MCP ready at ${localBase}/mcp`);

@@ -78,6 +78,7 @@ let failTpm = false;
 let lostCreateResponse = false;
 let failDestroy = false;
 let stopInstaller = false;
+let finishWhileRunning = false;
 const guestCredential = { username: 'devuser', password: ['test', 'credential'].join('-') };
 const executor = {
   async run(binary, args, options) {
@@ -155,6 +156,10 @@ const executor = {
       vm.state = 'Running'; return result({ state: 'Running' });
     }
     if (operation === 'status') {
+      if (finishWhileRunning && vm.iso) {
+        vm.polls = (vm.polls ?? 0) + 1;
+        return result({ state: vm.polls === 1 ? 'Running' : 'Off' });
+      }
       if (stopInstaller && vm.iso) {
         // The user leaves the console open before starting, then installs/shuts down.
         vm.polls = (vm.polls ?? 0) + 1;
@@ -310,6 +315,22 @@ try {
   assert.ok(progress.some(message => /Start/.test(message) && /Space/.test(message)));
   assert.equal(calls.find(c => c.operation === 'disk' && c.payload.size).payload.size, 64 * 1024 ** 3);
 
+  stopInstaller = false;
+  const manualOffCallsStart = calls.length;
+  const manuallyFinished = await manager.setupImage({ ...options, name: 'installed-manual-off', sourcePath: iso, finishRequested: () => true });
+  assert.equal(manuallyFinished.source.originalFileName, 'installer.iso.installed.vhdx');
+  assert.equal(calls.slice(manualOffCallsStart).filter(c => c.operation === 'status').length, 1, 'Explicit finish must not wait four hours for an already-off guest');
+  finishWhileRunning = true;
+  const manualRunningCallsStart = calls.length;
+  const manualProgress = [];
+  await manager.setupImage({ ...options, name: 'installed-manual-running', sourcePath: iso, finishRequested: () => true, onProgress: message => manualProgress.push(message) });
+  const manualRunningCalls = calls.slice(manualRunningCallsStart);
+  assert.equal(manualRunningCalls.filter(c => c.operation === 'status').length, 2, 'Manual finish must wait until a running guest shuts down');
+  assert.ok(manualProgress.some(message => /Shut down the guest/.test(message)));
+  assert.equal(vms.size, 0);
+  finishWhileRunning = false;
+  stopInstaller = true;
+
   const windowsIso = path.join(root, 'windows-installer.iso'); await fs.writeFile(windowsIso, 'windows iso test bytes');
   assert.deepEqual(await manager.inspectInstallerIso(windowsIso), { windows: true, label: 'WINDOWS_TEST' });
   assert.deepEqual(await manager.inspectInstallerIso(iso), { windows: false, label: 'WINDOWS_TEST' });
@@ -358,6 +379,6 @@ try {
   console.log('Hyper-V smoke passed (selection, schemas, scripts, mocked import/ISO/lifecycle, ownership and failure recovery).');
 } finally {
   assert.equal(vms.size, 0, 'Mock VMs must be cleaned up');
-  for (const directory of ['native', 'installed', 'installed-auto', 'vhd']) await fs.chmod(path.join(root, 'store', 'images', directory, 'base.vhdx'), 0o600).catch(() => {});
+  for (const directory of ['native', 'installed', 'installed-manual-off', 'installed-manual-running', 'installed-auto', 'vhd']) await fs.chmod(path.join(root, 'store', 'images', directory, 'base.vhdx'), 0o600).catch(() => {});
   await fs.rm(root, { recursive: true, force: true });
 }
