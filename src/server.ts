@@ -442,6 +442,7 @@ const STANDARD_TOOL_NAMES = [
   "vm_download",
   "vm_guest_status",
   "browser",
+  "browser_preview",
   "subagent_spawn",
   "subagent_message",
   "subagent_status",
@@ -483,6 +484,7 @@ const FULL_TOOL_NAMES = [
   "vm_download",
   "vm_guest_status",
   "browser",
+  "browser_preview",
   "subagent_spawn",
   "subagent_message",
   "subagent_status",
@@ -507,6 +509,7 @@ const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   "bash",
   "git",
   "browser",
+  "browser_preview",
   "vm",
   "vm_exec",
   "vm_upload",
@@ -550,8 +553,10 @@ export function toolNamesForMode(config: CodexProConfig): string[] {
     if (analysisIndex !== -1) names.splice(analysisIndex, 1);
   }
   if (!config.browserEnabled) {
-    const browserIndex = names.indexOf("browser");
-    if (browserIndex !== -1) names.splice(browserIndex, 1);
+    for (const browserTool of ["browser", "browser_preview"]) {
+      const browserIndex = names.indexOf(browserTool);
+      if (browserIndex !== -1) names.splice(browserIndex, 1);
+    }
   }
   if (!subagentBackendAvailable(config)) {
     for (const name of [...names]) {
@@ -594,7 +599,7 @@ function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
   if (name === "codex_sessions") return config.codexSessions !== "off";
   if (name === "read_codex_session") return config.codexSessions === "read";
   if (name === "inspect_workspace" && !config.analysisEnabled) return false;
-  if (name === "browser" && !config.browserEnabled) return false;
+  if ((name === "browser" || name === "browser_preview") && !config.browserEnabled) return false;
   if (name.startsWith("subagent_") && !subagentBackendAvailable(config)) return false;
   if (name === "handoff_to_agent" && config.writeMode === "handoff") return true;
   if (config.toolMode === "full") return true;
@@ -644,6 +649,9 @@ function serverInstructions(config: CodexProConfig): string {
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
+    config.browserEnabled && config.toolMode !== "minimal" && !config.connectionTest
+      ? "Browser: use browser_preview to open any http(s) page (including localhost development sites) and return a rendered screenshot directly as an MCP image in one call. Use browser open/navigate/screenshot for interactive multi-step sessions. Never assume ChatGPT's own environment can reach the user's localhost; CodexPro launches Playwright locally."
+      : "",
     vmInstruction,
     "6. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
     config.codexSessions !== "off"
@@ -2751,6 +2759,46 @@ export function createCodexProServer(
       }
       const body = typeof result?.stdout === "string" ? result.stdout || result.stderr || "(no output)" : JSON.stringify(result, null, 2);
       return textResult(`# Git ${action}\n\n${body}`, { workspace_id: workspace.id, action, result });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "browser_preview",
+    {
+      title: "Preview Web Page",
+      description: "Open a web page in local Playwright Chromium (including http://localhost:5174/home), wait for rendering, take a screenshot, and return the actual image to the AI in one call. Only available when CODEXPRO_BROWSER_ENABLED=1. The disposable browser session is closed after capture; use browser for interactive sessions.",
+      inputSchema: {
+        workspace_id: z.string().optional(),
+        url: z.string().min(1).describe("Absolute http:// or https:// URL reachable from the computer running CodexPro, including localhost development servers."),
+        viewport_width: z.number().int().min(320).max(2560).optional().describe("Viewport width in pixels, default 1280."),
+        viewport_height: z.number().int().min(320).max(1600).optional().describe("Viewport height in pixels, default 800."),
+        full_page: z.boolean().optional().describe("Capture the full scrollable page. Default true."),
+        wait_for_selector: z.string().min(1).max(500).optional().describe("Wait until this CSS/Playwright selector is visible before capture."),
+        wait_ms: z.number().int().min(0).max(10000).optional().describe("Additional rendering wait in milliseconds; default 500."),
+        output_path: z.string().optional().describe("Optional workspace-relative .png/.jpg/.jpeg output path. Defaults to .ai-bridge/browser-preview-*.png.")
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false, idempotentHint: false }
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const screenshot = await browserManager.preview(String(args.url), workspace, {
+        viewportWidth: args.viewport_width,
+        viewportHeight: args.viewport_height,
+        fullPage: args.full_page,
+        waitForSelector: args.wait_for_selector,
+        waitMs: args.wait_ms,
+        outputPath: args.output_path
+      }, browserOwnerId);
+      const { data, mimeType, ...details } = screenshot;
+      return {
+        content: [
+          { type: "text", text: redactSensitiveText(`# Web page preview\n\n${JSON.stringify(details, null, 2)}`) },
+          { type: "image", data, mimeType }
+        ],
+        structuredContent: redactStructured({ workspace_id: workspace.id, result: details })
+      };
     }
   );
 

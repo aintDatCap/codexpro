@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import fsp from "node:fs/promises";
+import path from "node:path";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
 import { CodexProError, PathGuard } from "./guard.js";
@@ -25,6 +27,25 @@ export interface BrowserScreenshot {
   bytes: number;
   sha256: string;
   data: string;
+}
+
+export interface BrowserPreviewOptions {
+  viewportWidth?: number;
+  viewportHeight?: number;
+  fullPage?: boolean;
+  waitForSelector?: string;
+  waitMs?: number;
+  outputPath?: string;
+}
+
+function browserUrl(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); }
+  catch { throw new CodexProError("browser URL must be an absolute http:// or https:// URL"); }
+  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) {
+    throw new CodexProError("browser URL must be http(s) and must not contain credentials");
+  }
+  return url.toString();
 }
 
 async function loadPlaywright(): Promise<any> {
@@ -72,7 +93,7 @@ export class BrowserManager {
     if (!this.config.browserEnabled) throw new CodexProError("browser tools are disabled; set CODEXPRO_BROWSER_ENABLED=1 to enable them");
   }
 
-  async open(id?: string, url?: string, logicalOwnerId = "legacy"): Promise<Record<string, unknown>> {
+  async open(id?: string, url?: string, logicalOwnerId = "legacy", viewport?: { width: number; height: number }): Promise<Record<string, unknown>> {
     this.assertEnabled();
     const owner = ownerId(logicalOwnerId);
     const resolvedId = sessionId(id);
@@ -80,12 +101,20 @@ export class BrowserManager {
     if (this.sessions.has(key)) throw new CodexProError(`browser session already exists: ${resolvedId}`);
     const { chromium } = await this.playwrightLoader();
     const browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    const session: BrowserSession = { id: resolvedId, ownerId: owner, browser, context, pages: [page], activePage: 0 };
-    this.sessions.set(key, session);
-    if (url) await page.goto(url, { waitUntil: "domcontentloaded" });
-    return this.describe(session);
+    let context: any;
+    try {
+      context = await browser.newContext(viewport ? { viewport } : {});
+      const page = await context.newPage();
+      const session: BrowserSession = { id: resolvedId, ownerId: owner, browser, context, pages: [page], activePage: 0 };
+      this.sessions.set(key, session);
+      if (url) await page.goto(browserUrl(url), { waitUntil: "domcontentloaded" });
+      return this.describe(session);
+    } catch (error) {
+      this.sessions.delete(key);
+      if (context) await context.close().catch(() => undefined);
+      await browser.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   private async describe(session: BrowserSession): Promise<Record<string, unknown>> {
@@ -95,7 +124,7 @@ export class BrowserManager {
 
   async navigate(id: string, url: string, logicalOwnerId = "legacy"): Promise<Record<string, unknown>> {
     const session = this.get(id, logicalOwnerId); const page = pageFor(session);
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(browserUrl(url), { waitUntil: "domcontentloaded" });
     return this.describe(session);
   }
 
@@ -161,6 +190,7 @@ export class BrowserManager {
     const resolved = this.guard.resolve(workspace, outputPath, { forWrite: true });
     if (!/\.(?:png|jpe?g)$/i.test(resolved.relPath)) throw new CodexProError("screenshot output path must end in .png, .jpg, or .jpeg");
     const mimeType = /\.png$/i.test(resolved.relPath) ? "image/png" : "image/jpeg";
+    await fsp.mkdir(path.dirname(resolved.absPath), { recursive: true });
     const buffer = Buffer.from(await page.screenshot({ path: resolved.absPath, fullPage }));
     const details = await this.describe(session);
     return {
@@ -175,6 +205,26 @@ export class BrowserManager {
       sha256: createHash("sha256").update(buffer).digest("hex"),
       data: buffer.toString("base64")
     };
+  }
+
+  async preview(url: string, workspace: Workspace, options: BrowserPreviewOptions = {}, logicalOwnerId = "legacy"): Promise<BrowserScreenshot> {
+    this.assertEnabled();
+    const targetUrl = browserUrl(url);
+    const viewport = { width: options.viewportWidth ?? 1280, height: options.viewportHeight ?? 800 };
+    const opened = await this.open(undefined, undefined, logicalOwnerId, viewport);
+    const id = String(opened.sessionId);
+    try {
+      await this.navigate(id, targetUrl, logicalOwnerId);
+      const page = pageFor(this.get(id, logicalOwnerId));
+      if (options.waitForSelector) await page.locator(options.waitForSelector).waitFor({ timeout: 15_000 });
+      await page.waitForTimeout(options.waitMs ?? 500);
+      return await this.screenshot(
+        id, workspace, options.outputPath ?? `.ai-bridge/browser-preview-${Date.now()}-${id}.png`,
+        options.fullPage ?? true, logicalOwnerId
+      );
+    } finally {
+      await this.close(id, logicalOwnerId);
+    }
   }
 
   async close(id: string, logicalOwnerId = "legacy"): Promise<void> {
