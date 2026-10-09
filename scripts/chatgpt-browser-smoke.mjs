@@ -82,7 +82,8 @@ try {
     /CODEXPRO_CHROME_PATH/i
   );
 
-  const browserConfig = loadConfig([]);
+  const browserConfig = { ...loadConfig([]), chatgptProjectAutoCreate: false };
+  assert.equal(loadConfig([]).chatgptProjectAutoCreate, true, 'project creation should default on for browser subagents');
   const browserConfigAgain = loadConfig([]);
   assert.equal(browserConfig.subagentsEnabled, true);
   assert.equal(browserConfig.subagentProvider, 'chatgpt-browser');

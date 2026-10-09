@@ -62,6 +62,7 @@ export interface CodexProConfig {
   chatgptBrowserExecutable?: string;
   chatgptBrowserResponseTimeoutMs: number;
   chatgptBrowserStartIntervalMs: number;
+  chatgptProjectAutoCreate: boolean;
   maxSubagents: number;
   maxAgentDepth: number;
   worktreeRoot?: string;
@@ -430,6 +431,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     chatgptBrowserExecutable: process.env.CODEXPRO_CHROME_PATH?.trim() || process.env.CODEXPRO_CHATGPT_BROWSER_EXECUTABLE?.trim() || undefined,
     chatgptBrowserResponseTimeoutMs: numberFrom(process.env.CODEXPRO_CHATGPT_BROWSER_RESPONSE_TIMEOUT_MS, 180_000, 10_000, 600_000),
     chatgptBrowserStartIntervalMs: numberFrom(process.env.CODEXPRO_CHATGPT_BROWSER_START_INTERVAL_MS, 400, 0, 5000),
+    chatgptProjectAutoCreate: boolFrom(process.env.CODEXPRO_CHATGPT_PROJECT_AUTO_CREATE, true),
     maxSubagents: numberFrom(process.env.CODEXPRO_MAX_SUBAGENTS, 3, 1, 16),
     maxAgentDepth: numberFrom(process.env.CODEXPRO_MAX_AGENT_DEPTH, 1, 1, 4),
     worktreeRoot: process.env.CODEXPRO_WORKTREE_ROOT?.trim() ? path.resolve(expandHome(process.env.CODEXPRO_WORKTREE_ROOT.trim())) : undefined,

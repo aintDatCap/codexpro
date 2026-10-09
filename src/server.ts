@@ -1390,6 +1390,7 @@ export function createCodexProServer(
         deepseekModel: config.deepseekModel,
         subagentsEnabled: config.subagentsEnabled,
         chatgptBrowserStartIntervalMs: config.chatgptBrowserStartIntervalMs,
+        chatgptProjectAutoCreate: config.chatgptProjectAutoCreate,
         maxSubagents: config.maxSubagents,
         maxAgentDepth: config.maxAgentDepth,
         worktreeRoot: config.worktreeRoot ?? null,

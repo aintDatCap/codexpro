@@ -17,6 +17,7 @@ const config = {
   subagentProvider: 'chatgpt-browser',
   subagentsEnabled: true,
   chatgptBrowserAutoStart: false,
+  chatgptProjectAutoCreate: false,
   chatgptBrowserStartIntervalMs: 0,
   chatgptBrowserProfilePath: path.join(root, 'private-chrome-profile')
 };
