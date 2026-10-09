@@ -12,7 +12,7 @@ import { loadConfig } from '../dist/config.js';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-browser-preview-'));
 const site = http.createServer((_request, response) => {
   response.setHeader('Content-Type', 'text/html; charset=utf-8');
-  response.end('<!doctype html><html><head><title>Local preview fixture</title></head><body><main id="app" style="background:#ffeedd"><h1>Local Playwright screenshot</h1></main></body></html>');
+  response.end('<!doctype html><html><head><title>Local preview fixture</title></head><body><main id="app" style="background:#ffeedd"><h1>Local Playwright screenshot</h1><p id="pointer">Pointer idle</p></main><script>document.addEventListener("pointermove", e => { document.getElementById("pointer").textContent = "Pointer " + Math.round(e.clientX) + "," + Math.round(e.clientY); });</script></body></html>');
 });
 const config = { ...loadConfig(['--root', root, '--allow-root', root]), browserEnabled: true };
 const manager = new BrowserManager(config, new PathGuard(config));
@@ -45,7 +45,18 @@ try {
   assert.equal(bytes.readUInt32BE(16), 1024);
   assert.equal(bytes.readUInt32BE(20), 768);
   assert.equal(screenshot.data, bytes.toString('base64'));
-  console.log('Local browser preview smoke passed');
+
+  // Exercise smooth pointer movement against REAL Chromium and check browser DOM events.
+  await manager.open('interactive-pointer', url, 'smoke');
+  const result = await manager.moveMouse('interactive-pointer', 160, 90, 16, 'smoke');
+  assert.deepEqual(result.pointer, { x: 160, y: 90 });
+  const snapshot = await manager.snapshot('interactive-pointer', 'smoke');
+  assert.match(snapshot.snapshot, /Pointer 160,90/);
+  await assert.rejects(manager.moveMouse('interactive-pointer', 160, 90, 1, 'smoke'), /steps/);
+  await assert.rejects(manager.moveMouse('interactive-pointer', 160, 90, 16, 'other-owner'), /unknown|owner|session/i);
+  await manager.close('interactive-pointer', 'smoke');
+  assert.equal(manager.count('smoke'), 0);
+  console.log('Local browser preview and Chromium mouse smoke passed');
 } finally {
   await manager.closeAll();
   await new Promise((resolve) => site.close(resolve));

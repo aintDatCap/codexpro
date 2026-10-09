@@ -34,7 +34,7 @@ async function waitFor(predicate, message) {
   }
   assert.fail(message);
 }
-function makeBrowser(factory) {
+function makeBrowser(factory, overrides = {}) {
   const pages = [];
   const context = {
     pages: () => pages,
@@ -53,7 +53,7 @@ function makeBrowser(factory) {
     async close() {}
   };
   return new ChatGPTBrowserManager(
-    config,
+    { ...config, ...overrides },
     async () => ({ chromium: { async launchPersistentContext() { return context; } } }),
     factory,
     { discoverChrome: () => '/fake/local-chrome' }
@@ -105,6 +105,45 @@ try {
   assert.equal(maxPreparing, 1, 'page initialization must be serialized');
   assert.equal(serial.diagnostics('first').queued_page_creations, 0);
   await serial.closeAll();
+
+  // Fixed pacing between rapid tab initializations, without randomized behavior.
+  const starts = [];
+  const paced = makeBrowser((page) => ({
+    currentUrl: () => page.url(),
+    async prepareFreshConversation() {
+      starts.push(Date.now());
+      page._url = 'https://chatgpt.com/';
+    },
+    async send() { return { content: 'ok' }; },
+    async cancel() {}
+  }), { chatgptBrowserStartIntervalMs: 80 });
+  await Promise.all([paced.createAgentPage('paced-1'), paced.createAgentPage('paced-2')]);
+  assert.equal(starts.length, 2);
+  assert.ok(starts[1] - starts[0] >= 65, 'rapid worker initialization should respect the configured interval');
+  await paced.closeAll();
+
+  // A failed initialization must release the queue so subsequent agents can start.
+  let failedOnce = false;
+  const recovering = makeBrowser((page) => ({
+    currentUrl: () => page.url(),
+    async prepareFreshConversation() {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error('test navigation failed');
+      }
+      page._url = 'https://chatgpt.com/';
+    },
+    async send() { return { content: 'ok' }; },
+    async cancel() {}
+  }));
+  const attempted = await Promise.allSettled([
+    recovering.createAgentPage('failed-initialization'),
+    recovering.createAgentPage('recovered-initialization')
+  ]);
+  assert.equal(attempted[0].status, 'rejected');
+  assert.equal(attempted[1].status, 'fulfilled');
+  assert.equal(recovering.diagnostics('recovered-initialization').queued_page_creations, 0);
+  await recovering.closeAll();
 
   // Closing the browser rejects queued/unfinished page initialization safely.
   const closingGate = deferred();
