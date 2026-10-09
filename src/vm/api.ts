@@ -27,7 +27,7 @@ export interface SetupVmImageOptions {
   diskSizeGb?: number;
   headless?: boolean;
   onProgress?: (message: string) => void;
-  /** Explicit terminal confirmation that interactive ISO installation is complete. */
+  /** When supplied for Hyper-V ISO setup, import requires this explicit approval AND a powered-off guest. */
   finishRequested?: () => boolean;
 }
 

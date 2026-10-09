@@ -78,6 +78,8 @@ let failTpm = false;
 let lostCreateResponse = false;
 let failDestroy = false;
 let stopInstaller = false;
+let restartInstaller = false;
+let finishAlreadyOff = false;
 let finishWhileRunning = false;
 const guestCredential = { username: 'devuser', password: ['test', 'credential'].join('-') };
 const executor = {
@@ -156,14 +158,21 @@ const executor = {
       vm.state = 'Running'; return result({ state: 'Running' });
     }
     if (operation === 'status') {
+      if (restartInstaller && vm.iso) {
+        vm.polls = (vm.polls ?? 0) + 1;
+        const state = ['Running', 'Off', 'Running', 'Off'][Math.min(vm.polls - 1, 3)];
+        vm.state = state;
+        return result({ state });
+      }
+      if (finishAlreadyOff && vm.iso) return result({ state: 'Off' });
       if (finishWhileRunning && vm.iso) {
         vm.polls = (vm.polls ?? 0) + 1;
         return result({ state: vm.polls === 1 ? 'Running' : 'Off' });
       }
       if (stopInstaller && vm.iso) {
-        // The user leaves the console open before starting, then installs/shuts down.
+        // CodexPro starts the VM after opening VMConnect; the guest later shuts down.
         vm.polls = (vm.polls ?? 0) + 1;
-        return result({ state: ['Off', 'Off', 'Running', 'Off'][Math.min(vm.polls - 1, 3)] });
+        return result({ state: ['Running', 'Off'][Math.min(vm.polls - 1, 1)] });
       }
       return result({ state: vm.state });
     }
@@ -310,16 +319,28 @@ try {
   assert.equal(isoCreate.payload.unattendIso, undefined);
   assert.ok(calls.some(c => c.operation === 'console'));
   const installerCalls = calls.slice(installerCallsStart);
-  assert.ok(!installerCalls.some(c => c.operation === 'start'), 'Interactive installer starts from VMConnect');
-  assert.equal(installerCalls.filter(c => c.operation === 'status').length, 4, 'Initial Off must not promote an unbooted disk');
+  assert.equal(installerCalls.filter(c => c.operation === 'start').length, 1, 'ISO installer must start automatically');
+  assert.ok(installerCalls.findIndex(c => c.operation === 'console') < installerCalls.findIndex(c => c.operation === 'start'), 'VMConnect must open before the installer starts');
+  assert.equal(installerCalls.filter(c => c.operation === 'status').length, 2, 'Installer must observe Running followed by Off before automatic import');
   assert.ok(progress.some(message => /Start/.test(message) && /Space/.test(message)));
   assert.equal(calls.find(c => c.operation === 'disk' && c.payload.size).payload.size, 64 * 1024 ** 3);
 
+  failStart = true;
+  await assert.rejects(manager.setupImage({ ...options, name: 'installed-start-fail', sourcePath: iso }), /Simulated failed start/);
+  failStart = false;
+  const failedInstaller = (await manager.instances.list()).find(record => record.image === 'installed-start-fail');
+  assert.ok(failedInstaller, 'Failed installer must retain diagnostic state');
+  assert.equal(vms.size, 0, 'Failed startup must clean up the owned VM');
+  await manager.destroyInstance(failedInstaller.id);
+  assert.equal((await manager.instances.list()).length, 0);
+
   stopInstaller = false;
+  finishAlreadyOff = true;
   const manualOffCallsStart = calls.length;
   const manuallyFinished = await manager.setupImage({ ...options, name: 'installed-manual-off', sourcePath: iso, finishRequested: () => true });
   assert.equal(manuallyFinished.source.originalFileName, 'installer.iso.installed.vhdx');
   assert.equal(calls.slice(manualOffCallsStart).filter(c => c.operation === 'status').length, 1, 'Explicit finish must not wait four hours for an already-off guest');
+  finishAlreadyOff = false;
   finishWhileRunning = true;
   const manualRunningCallsStart = calls.length;
   const manualProgress = [];
@@ -329,6 +350,29 @@ try {
   assert.ok(manualProgress.some(message => /Shut down the guest/.test(message)));
   assert.equal(vms.size, 0);
   finishWhileRunning = false;
+  stopInstaller = true;
+
+  // Shutdown is not approval: the user can power the guest back on before typing finish.
+  stopInstaller = false;
+  restartInstaller = true;
+  const restartCallsStart = calls.length;
+  const restartProgress = [];
+  const afterRestart = await manager.setupImage({
+    ...options, name: 'installed-after-restart', sourcePath: iso,
+    finishRequested: () => {
+      const recent = calls.slice(restartCallsStart);
+      const statusPolls = recent.filter(call => call.operation === 'status').length;
+      if (statusPolls < 4) return false;
+      assert.equal(recent.filter(call => call.operation === 'destroy').length, 0, 'Do not delete VM before finish');
+      return true;
+    },
+    onProgress: message => restartProgress.push(message)
+  });
+  assert.equal(afterRestart.source.originalFileName, 'installer.iso.installed.vhdx');
+  assert.equal(calls.slice(restartCallsStart).filter(call => call.operation === 'status').length, 4, 'Power-off mid-install must not finalize');
+  assert.ok(restartProgress.some(message => /powered off and has NOT been removed/.test(message)));
+  assert.equal(vms.size, 0, 'VM is removed only after finish approval and disk import');
+  restartInstaller = false;
   stopInstaller = true;
 
   const windowsIso = path.join(root, 'windows-installer.iso'); await fs.writeFile(windowsIso, 'windows iso test bytes');
@@ -355,7 +399,7 @@ try {
   assert.equal(unattendedCreate.payload.secureBoot, 'windows');
   assert.ok(unattendedProgress.some(message => /unattended setup/.test(message) && /devuser/.test(message)));
   assert.equal(unattendedCalls.filter(c => c.operation === 'inspectIso').length, 1);
-  assert.ok(!unattendedCalls.some(c => c.operation === 'start'), 'Unattended Windows installer still starts from VMConnect to catch the DVD boot prompt');
+  assert.equal(unattendedCalls.filter(c => c.operation === 'start').length, 1, 'Unattended Windows installer must also start automatically');
   for (const ext of ['raw', 'qcow2']) {
     const unsupported = path.join(root, `source.${ext}`); await fs.writeFile(unsupported, 'unsupported');
     await assert.rejects(manager.setupImage({ ...options, name: ext, sourcePath: unsupported }), /Convert qcow2\/raw manually/);
@@ -379,6 +423,6 @@ try {
   console.log('Hyper-V smoke passed (selection, schemas, scripts, mocked import/ISO/lifecycle, ownership and failure recovery).');
 } finally {
   assert.equal(vms.size, 0, 'Mock VMs must be cleaned up');
-  for (const directory of ['native', 'installed', 'installed-manual-off', 'installed-manual-running', 'installed-auto', 'vhd']) await fs.chmod(path.join(root, 'store', 'images', directory, 'base.vhdx'), 0o600).catch(() => {});
+  for (const directory of ['native', 'installed', 'installed-manual-off', 'installed-manual-running', 'installed-after-restart', 'installed-auto', 'vhd']) await fs.chmod(path.join(root, 'store', 'images', directory, 'base.vhdx'), 0o600).catch(() => {});
   await fs.rm(root, { recursive: true, force: true });
 }

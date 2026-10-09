@@ -165,7 +165,7 @@ export class HypervBackend implements VmBackend {
     const vmId = validateVmGuid(result.vmId);
     await this.instances.update(record.id, { hyperv: { ownershipId, vmId }, state: iso ? "created" : "starting" });
     // Windows installer media gives only a short window to press a boot key.
-    // Let the human start ISO installs from the already-open VMConnect console.
+    // installIso starts the installer after opening VMConnect so the boot prompt remains visible.
     if (iso) return;
     await this.ps.run("start", { vmId, ownershipId }, 60_000);
     await this.instances.update(record.id, { state: "running" });
@@ -213,25 +213,38 @@ export class HypervBackend implements VmBackend {
           await this.createVm(record, disk, options.secureBoot ?? "off", iso, unattendIso);
           const identity = await this.identity(await this.instances.read(record.id));
           if (options.windowsUnattend) {
-            options.onProgress?.(`Windows installer ${record.id} (${identity.vmId}) is prepared for unattended setup. In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. CodexPro will wipe only this newly created VM disk, partition it, skip Microsoft-account/network/privacy OOBE pages, and create local Administrator "${options.windowsUnattend.username}". If the source ISO contains multiple Windows editions, Setup may still ask you to choose one. The account starts with a blank password and Windows will require changing it at first sign-in. Shut down the guest when installation is complete. You can also type finish in the CodexPro terminal once the guest is off. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
+            options.onProgress?.(`Windows installer ${record.id} (${identity.vmId}) is prepared for unattended setup. CodexPro opens VMConnect and starts the VM automatically. Focus the guest display and press Space immediately if prompted to boot from CD/DVD. CodexPro will wipe only this newly created VM disk, partition it, skip Microsoft-account/network/privacy OOBE pages, and create local Administrator "${options.windowsUnattend.username}". If the source ISO contains multiple Windows editions, Setup may still ask you to choose one. The account starts with a blank password and Windows will require changing it at first sign-in. When installation is complete, shut down the guest and type finish in the CodexPro terminal. Shutting down alone will NOT remove the VM. Network is disconnected. Interactive setup has no automatic timeout; type finish when ready or Ctrl+C to cancel. Failed disks are retained.`);
           } else {
-            options.onProgress?.(`Installer ${record.id} (${identity.vmId}). In VMConnect, click Start (Avvia), focus the guest display and immediately press Space when prompted to boot from CD/DVD. If the UEFI boot summary appears, click Restart now and press Space immediately. Complete installation, then shut down the guest. You can also type finish in the CodexPro terminal once the guest is off. Network is disconnected. Setup expires after 4 hours; failed disks are retained.`);
+            options.onProgress?.(`Installer ${record.id} (${identity.vmId}). CodexPro opens VMConnect and starts the VM automatically. Focus the guest display and press Space immediately if prompted to boot from CD/DVD. If the UEFI boot summary appears, click Restart now and press Space immediately. When installation is complete, shut down the guest and type finish in the CodexPro terminal to import the disk. Shutting down alone will NOT remove the VM. Network is disconnected. Interactive setup has no automatic timeout; type finish when ready or Ctrl+C to cancel. Failed disks are retained.`);
           }
           await this.ps.run("console", identity);
+          options.onProgress?.("Starting the Hyper-V installer VM now. Focus VMConnect and press Space immediately if the CD/DVD boot prompt appears.");
+          const boot = await this.ps.run<{ state: string }>("start", identity, 60_000);
+          if (boot.state !== "Running") throw new Error(`Installer did not start (Hyper-V state: ${boot.state})`);
+          await this.instances.update(record.id, { state: "running" });
           const deadline = Date.now() + 4 * 60 * 60_000;
           let started = false;
+          let awaitingConfirmation = false;
           let waitingForShutdown = false;
           for (;;) {
             if (interrupted) throw new Error("ISO installation interrupted");
-            if (Date.now() >= deadline) throw new Error("ISO installation timed out after 4 hours");
+            if (!options.finishRequested && Date.now() >= deadline) throw new Error("ISO installation timed out after 4 hours");
             const status = await this.ps.run<{ state: string }>("status", identity);
             if (status.state === "Running" && !started) {
               started = true;
               await this.instances.update(record.id, { state: "running" });
             }
             const finishRequested = options.finishRequested?.() ?? false;
-            if (status.state === "Off" && (started || finishRequested)) break;
-            if (finishRequested && !waitingForShutdown) {
+            // An installer may shut down or reboot before it is ready to import.
+            // Never remove the temporary VM on shutdown when terminal confirmation is enabled.
+            if (status.state === "Off" && (options.finishRequested ? finishRequested : started)) break;
+            if (options.finishRequested && status.state === "Off" && !awaitingConfirmation) {
+              awaitingConfirmation = true;
+              options.onProgress?.("The installer VM is powered off and has NOT been removed. Once the OS installation is complete, type finish in the CodexPro terminal and press Enter. You can restart the VM in VMConnect to continue installing.");
+            } else if (status.state === "Running" && awaitingConfirmation) {
+              awaitingConfirmation = false;
+            }
+            if (finishRequested && status.state !== "Off" && !waitingForShutdown) {
               waitingForShutdown = true;
               options.onProgress?.("Finish requested. Shut down the guest from inside the VM before CodexPro can safely import its disk.");
             }

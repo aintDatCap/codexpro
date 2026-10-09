@@ -210,8 +210,8 @@ async function setupCommand(runtime, args) {
     throw new Error('--windows-unattend/--windows-user require a Windows installer ISO.');
   }
   if (isInstallerIso && !args.headless) {
-    console.log('\nInstaller ISO detected. CodexPro will create a blank disk and open the native VM console.');
-    console.log('Complete the OS installation in the VM console, then shut the VM down to finish importing the disk.\n');
+    console.log('\nInstaller ISO detected. CodexPro will create a blank disk, open the native VM console, and start the installer VM.');
+    console.log('Complete the OS installation in the VM console, then shut the guest down and type finish in this terminal to import the disk. Shutting down alone will NOT remove the VM.\n');
   }
   const manager = new runtime.VmManager({
     vmRoot: resolvedVmHome,
@@ -281,7 +281,7 @@ async function setupCommand(runtime, args) {
   }
 
   let finishRequested = false;
-  const finishTerminal = process.platform === 'win32' && isInstallerIso && process.stdin.isTTY
+  const finishTerminal = process.platform === 'win32' && isInstallerIso && !args.headless
     ? createInterface({ input: process.stdin, output: process.stdout })
     : undefined;
   if (finishTerminal) {

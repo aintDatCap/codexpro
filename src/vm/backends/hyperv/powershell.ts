@@ -223,7 +223,10 @@ try {
 }
 `,
   console: ownedVm + `
-Start-Process -FilePath "$env:SystemRoot\\System32\\vmconnect.exe" -ArgumentList @('localhost', '-G', $vm.Id.ToString()) | Out-Null
+$consoleProcess = Start-Process -FilePath "$env:SystemRoot\\System32\\vmconnect.exe" -ArgumentList @('localhost', '-G', $vm.Id.ToString()) -PassThru
+# Give the console a chance to display before starting the VM: installer DVDs can ask for a boot key immediately.
+try { [void]$consoleProcess.WaitForInputIdle(10000) } catch { }
+Start-Sleep -Seconds 1
 @{ ok=$true } | ConvertTo-Json -Compress
 `
 } as const;
