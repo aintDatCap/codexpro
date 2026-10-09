@@ -144,6 +144,17 @@ function errorText(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error));
 }
 
+export type ManualCheckKind = "verification" | "authentication";
+
+export class ManualBrowserCheckError extends CodexProError {
+  readonly code = "MANUAL_BROWSER_CHECK_REQUIRED";
+  constructor(readonly kind: ManualCheckKind) {
+    super(kind === "verification"
+      ? "ChatGPT requires a manual browser verification (for example Cloudflare Turnstile). Press b to open the dedicated CodexPro browser, complete the check yourself, then call subagent_resume."
+      : "ChatGPT authentication is required. Press b to open the dedicated CodexPro browser, sign in yourself, then call subagent_resume.");
+  }
+}
+
 export interface ChatGPTPageAdapter {
   prepareFreshConversation(): Promise<void>;
   send(prompt: string, signal?: AbortSignal, onConversationUrl?: (url: string) => void): Promise<{ content: string; conversationUrl?: string }>;
@@ -176,6 +187,7 @@ function conversationUrlFrom(raw: string): string | undefined {
 }
 
 export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
+  private pendingReply?: { prompt: string; before: number };
   constructor(private readonly page: any, private readonly timeoutMs = 180_000) {}
 
   currentUrl(): string { return String(this.page.url?.() ?? ""); }
@@ -192,19 +204,27 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
     return undefined;
   }
 
-  private async manualInteractionReason(): Promise<string | undefined> {
+  private async manualInteractionReason(): Promise<ManualBrowserCheckError | undefined> {
+    // Detect the visible challenge itself, not arbitrary text in a conversation.
+    // Never interact with a challenge or attempt to solve it automatically.
+    const challengeSelectors = [
+      'iframe[src*="challenges.cloudflare.com"]',
+      '[class*="cf-turnstile"]',
+      '#challenge-running',
+      '#challenge-form'
+    ];
+    for (const selector of challengeSelectors) {
+      if (await visible(this.page.locator?.(selector))) return new ManualBrowserCheckError("verification");
+    }
+    // A conversation mentioning CAPTCHA is not a challenge when the composer works.
+    if (await this.composer()) return undefined;
     let body = "";
     try { body = String(await this.page.locator?.("body")?.innerText?.()); } catch {}
-    if (/captcha|verify you are human|checking your browser|unusual activity|account restriction/i.test(body)) {
-      return "ChatGPT requires manual browser interaction.\n\nPress b to open the CodexPro browser and complete the check manually.";
+    if (/captcha|verify you are human|checking your browser|unusual activity|account restriction|just a moment|cloudflare/i.test(body)) {
+      return new ManualBrowserCheckError("verification");
     }
-
-    // ChatGPT may render a Log in button even while an anonymous/authenticated
-    // composer is usable. Treat authentication as blocking only when there is
-    // no usable composer on the page.
-    if (await this.composer()) return undefined;
     const login = this.page.getByRole?.("button", { name: /log in|sign in/i });
-    if (await visible(login)) return "ChatGPT authentication is required.\n\nPress b to open the CodexPro browser and sign in manually.";
+    if (await visible(login)) return new ManualBrowserCheckError("authentication");
     return undefined;
   }
 
@@ -212,10 +232,10 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (this.page.isClosed?.()) throw new CodexProError("The ChatGPT browser tab was closed while the subagent was running.");
+      const reason = await this.manualInteractionReason();
+      if (reason) throw reason;
       const composer = await this.composer();
       if (composer) return composer;
-      const reason = await this.manualInteractionReason();
-      if (reason) throw new CodexProError(reason);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     throw new CodexProError("ChatGPT prompt box was not available. Open the visible browser and resolve any login or page issue manually.");
@@ -228,6 +248,8 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
       await this.waitForComposer();
     } catch (error) {
       if (error instanceof CodexProError) throw error;
+      const reason = await this.manualInteractionReason();
+      if (reason) throw reason;
       throw new CodexProError(`Could not open ChatGPT in the dedicated browser: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`);
     }
   }
@@ -309,41 +331,49 @@ export class ChatGPTWebPageAdapter implements ChatGPTPageAdapter {
 
   async send(prompt: string, signal?: AbortSignal, onConversationUrl?: (url: string) => void): Promise<{ content: string; conversationUrl?: string }> {
     if (!prompt.trim()) throw new CodexProError("ChatGPT browser prompt is empty.");
-    const before = await this.submit(prompt);
+    if (this.pendingReply && this.pendingReply.prompt !== prompt) {
+      throw new CodexProError("A previous ChatGPT prompt is awaiting manual verification. Resume it before sending a different prompt.");
+    }
+    const before = this.pendingReply?.before ?? await this.submit(prompt);
+    this.pendingReply ??= { prompt, before };
     const deadline = Date.now() + this.timeoutMs;
     let lastText = "";
     let stableTicks = 0;
-    let sawAssistant = false;
-
-    while (Date.now() < deadline) {
-      if (this.page.isClosed?.()) throw new CodexProError("The ChatGPT browser tab was closed while the subagent was running.");
-      if (signal?.aborted) {
-        await this.cancel();
-        throw new DOMException("Subagent cancelled", "AbortError");
-      }
-      const reason = await this.manualInteractionReason();
-      if (reason && !sawAssistant) throw new CodexProError(reason);
-      const activeConversationUrl = conversationUrlFrom(this.currentUrl());
-      if (activeConversationUrl) onConversationUrl?.(activeConversationUrl);
-
-      const assistants = await this.assistantMessages();
-      let count = 0;
-      try { count = Number(await assistants?.count?.()) || 0; } catch {}
-      if (count > before) {
-        sawAssistant = true;
-        const text = (await this.assistantText(assistants)).trim();
-        const complete = await this.responseComplete(assistants);
-        if (text && text === lastText && complete) stableTicks += 1;
-        else stableTicks = 0;
-        lastText = text;
-        if (text && stableTicks >= 2) {
-          return { content: redactSensitiveText(text), conversationUrl: conversationUrlFrom(this.currentUrl()) };
+    try {
+      while (Date.now() < deadline) {
+        if (this.page.isClosed?.()) throw new CodexProError("The ChatGPT browser tab was closed while the subagent was running.");
+        if (signal?.aborted) {
+          await this.cancel();
+          throw new DOMException("Subagent cancelled", "AbortError");
         }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+        const reason = await this.manualInteractionReason();
+        if (reason) throw reason;
+        const activeConversationUrl = conversationUrlFrom(this.currentUrl());
+        if (activeConversationUrl) onConversationUrl?.(activeConversationUrl);
 
-    throw new CodexProError("Timed out waiting for ChatGPT to finish generating. Inspect the visible worker tab and retry or cancel the subagent.");
+        const assistants = await this.assistantMessages();
+        let count = 0;
+        try { count = Number(await assistants?.count?.()) || 0; } catch {}
+        if (count > before) {
+          const text = (await this.assistantText(assistants)).trim();
+          const complete = await this.responseComplete(assistants);
+          if (text && text === lastText && complete) stableTicks += 1;
+          else stableTicks = 0;
+          lastText = text;
+          if (text && stableTicks >= 2) {
+            this.pendingReply = undefined;
+            return { content: redactSensitiveText(text), conversationUrl: conversationUrlFrom(this.currentUrl()) };
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      throw new CodexProError("Timed out waiting for ChatGPT to finish generating. Inspect the visible worker tab and retry or cancel the subagent.");
+    } catch (error) {
+      // A manual challenge can occur after a prompt was submitted.
+      // Preserve the pending response so resume does not send the prompt twice.
+      if (!(error instanceof ManualBrowserCheckError)) this.pendingReply = undefined;
+      throw error;
+    }
   }
 
   async cancel(): Promise<void> {
@@ -358,7 +388,15 @@ export class ChatGPTBrowserManager {
   private state: ChatGPTBrowserState = "stopped";
   private context?: any;
   private starting?: Promise<void>;
-  private readonly pages = new Map<string, { page: any; adapter: ChatGPTPageAdapter }>();
+  private readonly pages = new Map<string, { page: any; adapter: ChatGPTPageAdapter; ready: boolean }>();
+  private creationTail: Promise<void> = Promise.resolve();
+  private queuedCreations = 0;
+  private lastPageCreationAt = 0;
+  private lifecycleEpoch = 0;
+  private readonly manualChecks = new Map<string, { kind: ManualCheckKind; phase: "initialization" | "response"; detectedAt: string }>();
+  private verificationCount = 0;
+  private authenticationCount = 0;
+  private resolvedCheckCount = 0;
   private readonly manuallyClosedPageIds = new Set<string>();
   private readonly discoverChrome: (override?: string) => string;
   private readonly now: () => number;
@@ -391,9 +429,60 @@ export class ChatGPTBrowserManager {
       page_count: this.pages.size,
       active_page_ids: [...this.pages.keys()],
       manually_closed_page_count: this.manuallyClosedPageIds.size,
+      queued_page_creations: this.queuedCreations,
+      page_start_interval_ms: this.config.chatgptBrowserStartIntervalMs,
+      active_manual_checks: this.manualChecks.size,
+      verification_count: this.verificationCount,
+      authentication_count: this.authenticationCount,
+      resolved_check_count: this.resolvedCheckCount,
       starting: Boolean(this.starting),
       attaching: false
     };
+  }
+
+  diagnostics(id?: string): Record<string, unknown> {
+    const { active_page_ids: _privateIds, ...safeState } = this.browserState();
+    return {
+      ...safeState,
+      ...(id ? { agent_id: id, manual_check: this.manualChecks.get(id) ?? null, page_ready: this.pages.get(id)?.ready ?? false } : {})
+    };
+  }
+
+  private markManualCheck(id: string, error: ManualBrowserCheckError, phase: "initialization" | "response"): void {
+    if (!this.manualChecks.has(id)) {
+      if (error.kind === "verification") this.verificationCount += 1;
+      else this.authenticationCount += 1;
+    }
+    this.manualChecks.set(id, { kind: error.kind, phase, detectedAt: new Date(this.now()).toISOString() });
+    this.logger.warn("chatgpt_browser_manual_check_required", { agent_id: id, kind: error.kind, phase, ...this.browserState() });
+  }
+
+  private clearManualCheck(id: string): void {
+    if (!this.manualChecks.delete(id)) return;
+    this.resolvedCheckCount += 1;
+    this.logger.info("chatgpt_browser_manual_check_resolved", { agent_id: id, ...this.browserState() });
+  }
+
+  // Serialize *only* page initialization; established workers still run concurrently.
+  private async queuePageCreation<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.creationTail;
+    const expectedEpoch = this.lifecycleEpoch;
+    let release!: () => void;
+    this.creationTail = new Promise<void>((resolve) => { release = resolve; });
+    this.queuedCreations += 1;
+    try {
+      await previous;
+      this.queuedCreations -= 1;
+      if (expectedEpoch !== this.lifecycleEpoch) throw new CodexProError("ChatGPT browser was restarted while this page creation was queued.");
+      const interval = this.config.chatgptBrowserStartIntervalMs ?? 400;
+      const remaining = this.lastPageCreationAt + interval - Date.now();
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+      if (expectedEpoch !== this.lifecycleEpoch) throw new CodexProError("ChatGPT browser was restarted while waiting to create this page.");
+      this.lastPageCreationAt = Date.now();
+      return await action();
+    } finally {
+      release();
+    }
   }
 
   private setState(next: ChatGPTBrowserState, event: string, fields: Record<string, unknown> = {}): void {
@@ -406,8 +495,10 @@ export class ChatGPTBrowserManager {
     if (context && this.context !== context) return;
     const before = this.browserState();
     this.context = undefined;
+    this.lifecycleEpoch += 1;
     this.pages.clear();
     this.manuallyClosedPageIds.clear();
+    this.manualChecks.clear();
     if (this.state !== "failed") this.state = "stopped";
     this.logger.warn("chatgpt_browser_context_closed", { state_before_snapshot: before, ...this.browserState() });
   }
@@ -511,6 +602,10 @@ export class ChatGPTBrowserManager {
   }
 
   async createAgentPage(id: string): Promise<{ pageId: string; conversationUrl?: string }> {
+    return this.queuePageCreation(() => this.createAgentPageOnce(id));
+  }
+
+  private async createAgentPageOnce(id: string): Promise<{ pageId: string; conversationUrl?: string }> {
     const pageLogger = this.logger.child({ agent_id: id, page_id: id });
     pageLogger.info("chatgpt_browser_agent_page_creation_started", this.browserState());
     const existing = this.pages.get(id);
@@ -522,15 +617,27 @@ export class ChatGPTBrowserManager {
     this.manuallyClosedPageIds.delete(id);
 
     try {
+      const epoch = this.lifecycleEpoch;
       const context = await this.ensureReady();
+      if (epoch !== this.lifecycleEpoch) throw new CodexProError("ChatGPT browser closed during page initialization.");
       const page = await context.newPage();
       const adapter = this.adapterFactory(page, this.config.chatgptBrowserResponseTimeoutMs);
       try {
-        await adapter.prepareFreshConversation();
-        this.pages.set(id, { page, adapter });
+        let ready = true;
+        try {
+          await adapter.prepareFreshConversation();
+        } catch (error) {
+          if (!(error instanceof ManualBrowserCheckError)) throw error;
+          if (epoch !== this.lifecycleEpoch) throw new CodexProError("ChatGPT browser closed during page initialization.");
+          ready = false;
+          this.markManualCheck(id, error, "initialization");
+        }
+        if (epoch !== this.lifecycleEpoch) throw new CodexProError("ChatGPT browser closed during page initialization.");
+        this.pages.set(id, { page, adapter, ready });
         page.on?.("close", () => {
           if (this.pages.get(id)?.page === page) {
             this.pages.delete(id);
+            this.manualChecks.delete(id);
             this.manuallyClosedPageIds.add(id);
             pageLogger.warn("chatgpt_browser_agent_page_closed", { manual_or_external: true, ...this.browserState() });
           }
@@ -571,7 +678,13 @@ export class ChatGPTBrowserManager {
       throw new CodexProError(`The ChatGPT browser tab for subagent ${id} was closed manually.`);
     }
     try {
+      if (!entry.ready) {
+        await entry.adapter.prepareFreshConversation();
+        entry.ready = true;
+        this.clearManualCheck(id);
+      }
       const result = await entry.adapter.send(prompt, signal, onConversationUrl);
+      this.clearManualCheck(id);
       pageLogger.info("chatgpt_browser_agent_send_completed", {
         duration_ms: this.now() - startedAt,
         response_chars: result.content.length,
@@ -580,6 +693,9 @@ export class ChatGPTBrowserManager {
       });
       return result;
     } catch (error) {
+      if (error instanceof ManualBrowserCheckError) {
+        this.markManualCheck(id, error, entry.ready ? "response" : "initialization");
+      }
       pageLogger.error("chatgpt_browser_agent_send_failed", error, {
         duration_ms: this.now() - startedAt,
         aborted: Boolean(signal?.aborted),
@@ -613,6 +729,7 @@ export class ChatGPTBrowserManager {
     if (!entry) return;
     this.pages.delete(id);
     this.manuallyClosedPageIds.delete(id);
+    this.manualChecks.delete(id);
     try {
       await entry.page.close?.();
       pageLogger.info("chatgpt_browser_agent_page_close_completed", this.browserState());
@@ -629,8 +746,10 @@ export class ChatGPTBrowserManager {
 
     this.state = "stopped";
     this.context = undefined;
+    this.lifecycleEpoch += 1;
     this.pages.clear();
     this.manuallyClosedPageIds.clear();
+    this.manualChecks.clear();
 
     for (const entry of entries) {
       if (!entry.page.isClosed?.()) {

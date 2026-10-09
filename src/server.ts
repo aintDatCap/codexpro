@@ -445,6 +445,8 @@ const STANDARD_TOOL_NAMES = [
   "browser_preview",
   "subagent_spawn",
   "subagent_message",
+  "subagent_resume",
+  "subagent_browser_diagnostics",
   "subagent_status",
   "subagent_result",
   "subagent_cancel"
@@ -487,6 +489,8 @@ const FULL_TOOL_NAMES = [
   "browser_preview",
   "subagent_spawn",
   "subagent_message",
+  "subagent_resume",
+  "subagent_browser_diagnostics",
   "subagent_status",
   "subagent_result",
   "subagent_cancel",
@@ -517,6 +521,7 @@ const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   "vm_guest_status",
   "subagent_spawn",
   "subagent_message",
+  "subagent_resume",
   "subagent_cancel",
   "export_pro_context",
   "handoff_to_agent",
@@ -557,6 +562,10 @@ export function toolNamesForMode(config: CodexProConfig): string[] {
       const browserIndex = names.indexOf(browserTool);
       if (browserIndex !== -1) names.splice(browserIndex, 1);
     }
+  }
+  if (config.subagentProvider !== "chatgpt-browser") {
+    const index = names.indexOf("subagent_browser_diagnostics");
+    if (index !== -1) names.splice(index, 1);
   }
   if (!subagentBackendAvailable(config)) {
     for (const name of [...names]) {
@@ -601,6 +610,7 @@ function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
   if (name === "inspect_workspace" && !config.analysisEnabled) return false;
   if ((name === "browser" || name === "browser_preview") && !config.browserEnabled) return false;
   if (name.startsWith("subagent_") && !subagentBackendAvailable(config)) return false;
+  if (name === "subagent_browser_diagnostics" && config.subagentProvider !== "chatgpt-browser") return false;
   if (name === "handoff_to_agent" && config.writeMode === "handoff") return true;
   if (config.toolMode === "full") return true;
   if (config.toolMode === "minimal") return MINIMAL_TOOLS.has(name);
@@ -649,6 +659,7 @@ function serverInstructions(config: CodexProConfig): string {
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
+    config.subagentsEnabled && config.toolMode !== "minimal" && !config.connectionTest && config.subagentProvider === "chatgpt-browser" ? "ChatGPT browser workers: page initialization is serialized. If a subagent is waiting for a browser verification or login, ask the user to complete it manually in the dedicated Chrome tab; only then call subagent_resume with manual_check_completed=true. Never solve or bypass a challenge automatically. Use subagent_browser_diagnostics for bounded check counts and queue status." : "",
     config.browserEnabled && config.toolMode !== "minimal" && !config.connectionTest
       ? "Browser: use browser_preview to open any http(s) page (including localhost development sites) and return a rendered screenshot directly as an MCP image in one call. Use browser open/navigate/screenshot for interactive multi-step sessions. Never assume ChatGPT's own environment can reach the user's localhost; CodexPro launches Playwright locally."
       : "",
@@ -1378,6 +1389,7 @@ export function createCodexProServer(
         deepseekConfigured: Boolean(config.deepseekApiKey),
         deepseekModel: config.deepseekModel,
         subagentsEnabled: config.subagentsEnabled,
+        chatgptBrowserStartIntervalMs: config.chatgptBrowserStartIntervalMs,
         maxSubagents: config.maxSubagents,
         maxAgentDepth: config.maxAgentDepth,
         worktreeRoot: config.worktreeRoot ?? null,
@@ -2810,9 +2822,9 @@ export function createCodexProServer(
       title: "Browser",
       description: "Operate an isolated Playwright Chromium session owned by the stable logical client. MCP reconnects do not create a new browser owner, and credentials/cookies are never inherited automatically. The screenshot action returns native MCP image content and also saves the image in the workspace.",
       inputSchema: {
-        workspace_id: z.string().optional(), action: z.enum(["open", "navigate", "snapshot", "click", "type", "select", "scroll", "wait", "tab", "screenshot", "close", "list"]),
+        workspace_id: z.string().optional(), action: z.enum(["open", "navigate", "snapshot", "click", "type", "select", "scroll", "move_mouse", "wait", "tab", "screenshot", "close", "list"]),
         session_id: z.string().optional(), url: z.string().optional(), selector: z.string().optional(), text: z.string().optional(), submit: z.boolean().optional(), values: z.array(z.string()).optional(),
-        x: z.number().optional(), y: z.number().optional(), timeout_ms: z.number().int().min(100).max(120000).optional(), tab_action: z.enum(["new", "list", "switch", "close"]).optional(), index: z.number().int().min(0).optional(),
+        x: z.number().optional(), y: z.number().optional(), steps: z.number().int().min(2).max(40).optional(), timeout_ms: z.number().int().min(100).max(120000).optional(), tab_action: z.enum(["new", "list", "switch", "close"]).optional(), index: z.number().int().min(0).optional(),
         output_path: z.string().optional(), full_page: z.boolean().optional()
       },
       annotations: BASH_ANNOTATIONS
@@ -2827,6 +2839,7 @@ export function createCodexProServer(
         case "type": result = await browserManager.type(id, String(args.selector ?? ""), String(args.text ?? ""), parseBool(args.submit, false), browserOwnerId); break;
         case "select": result = await browserManager.select(id, String(args.selector ?? ""), args.values ?? [], browserOwnerId); break;
         case "scroll": result = await browserManager.scroll(id, Number(args.x ?? 0), Number(args.y ?? 600), browserOwnerId); break;
+        case "move_mouse": result = await browserManager.moveMouse(id, Number(args.x ?? 0), Number(args.y ?? 0), Number(args.steps ?? 12), browserOwnerId); break;
         case "wait": result = await browserManager.wait(id, args.selector, args.timeout_ms, browserOwnerId); break;
         case "tab": result = await browserManager.tab(id, args.tab_action ?? "list", args.index, browserOwnerId); break;
         case "screenshot": {
@@ -2881,6 +2894,34 @@ export function createCodexProServer(
     if (!agentManager) throw new CodexProError("Subagents are unavailable for the selected provider.");
     const agent = await agentManager.message(args.id, args.message, runtimeClient?.clientId);
     return textResult(`# Subagent ${agent.id}\n\nState: ${agent.state}\nSummary: ${agent.result?.summary ?? agent.error ?? "no result"}`, { id: agent.id, state: agent.state, backend: agent.backend, model: agent.model, external_conversation: agent.session.externalConversation ?? null, result: agent.result ?? null, error: agent.error ?? null, untrusted: true });
+  });
+
+  registerCodexTool(config, server, "subagent_resume", {
+    title: "Resume Subagent After Manual Verification",
+    description: "Resume the exact interrupted task after the user has manually completed a ChatGPT/Cloudflare browser verification or login. Do not call until the user confirms completion. Does not automate or bypass any challenge.",
+    inputSchema: { id: z.string(), manual_check_completed: z.literal(true).describe("Set true only after the user confirms completing the check in the visible browser.") },
+    annotations: BASH_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager) throw new CodexProError("Subagents are unavailable for the selected provider.");
+    const agent = await agentManager.resume(args.id, runtimeClient?.clientId);
+    return textResult(`# Subagent ${agent.id} resumed\n\nState: ${agent.state}`, {
+      id: agent.id, state: agent.state, backend: agent.backend, manual_resume: true
+    });
+  });
+
+  registerCodexTool(config, server, "subagent_browser_diagnostics", {
+    title: "Subagent Browser Diagnostics",
+    description: "Read bounded Chrome worker diagnostics including serial page-start queue and whether this owned subagent is waiting for manual verification. Never reads cookies, credentials, or challenge tokens.",
+    inputSchema: { id: z.string().describe("Subagent id owned by this ChatGPT logical client.") },
+    annotations: READ_ONLY_ANNOTATIONS
+  }, async (args) => {
+    if (!agentManager || !chatgptBrowserManager) throw new CodexProError("ChatGPT browser subagents are unavailable.");
+    const agent = agentManager.get(args.id, runtimeClient?.clientId);
+    if (agent.backend !== "chatgpt-browser") throw new CodexProError("Diagnostics only apply to ChatGPT browser subagents.");
+    const diagnostics = chatgptBrowserManager.diagnostics(agent.id);
+    return textResult(`# Subagent Browser Diagnostics\n\n${JSON.stringify(diagnostics, null, 2)}`, {
+      id: agent.id, state: agent.state, diagnostics
+    });
   });
 
   registerCodexTool(config, server, "subagent_status", {

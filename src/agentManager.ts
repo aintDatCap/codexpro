@@ -8,6 +8,7 @@ import { readTextFile } from "./fsOps.js";
 import { instructionResolver } from "./instructionContext.js";
 import { WorktreeManager, type WorktreeRecord } from "./gitService.js";
 import type { CodexProLogger } from "./logging.js";
+import { ManualBrowserCheckError } from "./chatgptBrowserManager.js";
 import { noopLogger } from "./logging.js";
 import { redactSensitiveText } from "./redact.js";
 
@@ -30,6 +31,7 @@ export interface ManagedAgent {
   session: AgentSession;
   result?: AgentResult;
   error?: string;
+  pendingPrompt?: string;
 }
 
 export interface AgentResult {
@@ -179,7 +181,7 @@ export class AgentManager {
     });
   }
 
-  private startRun(agent: ManagedAgent, prompt: string, reason: "spawn" | "followup"): void {
+  private startRun(agent: ManagedAgent, prompt: string, reason: "spawn" | "followup" | "resume"): void {
     if (this.runs.has(agent.id)) throw new CodexProError("subagent already has an active request");
     const controller = new AbortController();
     this.runs.set(agent.id, controller);
@@ -189,9 +191,16 @@ export class AgentManager {
     logger.info("subagent_run_started", { reason, ...this.counts() });
     void this.runAgent(agent, prompt, controller).catch((error) => {
       if (agent.state !== "cancelled") {
-        agent.state = "failed";
         agent.error = redactSensitiveText(error instanceof Error ? error.message : String(error));
-        logger.error("subagent_run_failed", error, { reason, ...this.counts() });
+        if (error instanceof ManualBrowserCheckError) {
+          agent.state = "waiting";
+          agent.pendingPrompt = prompt;
+          logger.warn("subagent_waiting_for_manual_browser_check", { kind: error.kind, ...this.counts() });
+        } else {
+          agent.state = "failed";
+          agent.pendingPrompt = undefined;
+          logger.error("subagent_run_failed", error, { reason, ...this.counts() });
+        }
       }
     }).finally(() => {
       if (this.runs.get(agent.id) === controller) this.runs.delete(agent.id);
@@ -228,6 +237,7 @@ export class AgentManager {
       }
       if (!controller.signal.aborted) {
         agent.state = "completed";
+        agent.pendingPrompt = undefined;
         logger.info("subagent_run_completed", { changed_file_count: agent.result.changedFiles.length, ...this.counts() });
       }
     } catch (error) {
@@ -362,9 +372,21 @@ export class AgentManager {
   async message(id: string, message: string, clientId?: string): Promise<ManagedAgent> {
     const agent = this.get(id, clientId);
     if (agent.state === "cancelled") throw new CodexProError("subagent is cancelled");
+    if (agent.state === "waiting") throw new CodexProError("Subagent is waiting for a manual browser check. Complete it in Chrome and call subagent_resume before sending a follow-up.");
     if (this.runs.has(id)) throw new CodexProError("subagent is still running; wait for completion before sending a follow-up");
     this.agentLogger(agent).info("subagent_followup_started", this.counts());
     this.startRun(agent, redactSensitiveText(message), "followup");
+    return this.get(id, clientId);
+  }
+
+  async resume(id: string, clientId?: string): Promise<ManagedAgent> {
+    const agent = this.get(id, clientId);
+    if (agent.state !== "waiting" || !agent.pendingPrompt) {
+      throw new CodexProError("Subagent is not waiting for manual browser verification.");
+    }
+    if (this.runs.has(id)) throw new CodexProError("Subagent request is still being cleaned up; retry after status settles.");
+    this.agentLogger(agent).info("subagent_manual_resume_requested", this.counts());
+    this.startRun(agent, agent.pendingPrompt, "resume");
     return this.get(id, clientId);
   }
 
@@ -376,6 +398,7 @@ export class AgentManager {
     try {
       await this.backend.cancel(agent.session.id);
       agent.state = "cancelled";
+      agent.pendingPrompt = undefined;
       logger.info("subagent_cancellation_completed", this.counts());
       return this.get(id, clientId);
     } catch (error) {

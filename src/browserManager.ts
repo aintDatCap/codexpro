@@ -12,6 +12,7 @@ interface BrowserSession {
   context: any;
   pages: any[];
   activePage: number;
+  pointer?: { x: number; y: number };
 }
 
 type PlaywrightLoader = () => Promise<any>;
@@ -160,6 +161,23 @@ export class BrowserManager {
     const session = this.get(id, logicalOwnerId); const page = pageFor(session);
     await page.evaluate(([dx, dy]: [number, number]) => window.scrollBy(dx, dy), [x, y]);
     return this.describe(session);
+  }
+
+  async moveMouse(id: string, x: number, y: number, steps = 12, logicalOwnerId = "legacy"): Promise<Record<string, unknown>> {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 10000 || Math.abs(y) > 10000 || !Number.isInteger(steps) || steps < 2 || steps > 40) {
+      throw new CodexProError("Mouse coordinates must be finite and within ±10000; steps must be 2–40.");
+    }
+    const session = this.get(id, logicalOwnerId);
+    const page = pageFor(session);
+    const start = session.pointer ?? { x: 0, y: 0 };
+    // Deterministic smoothstep for testing hover transitions; NOT anti-bot evasion.
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      const eased = t * t * (3 - 2 * t);
+      await page.mouse.move(start.x + (x - start.x) * eased, start.y + (y - start.y) * eased);
+    }
+    session.pointer = { x, y };
+    return { ...(await this.describe(session)), pointer: session.pointer };
   }
 
   async wait(id: string, selector?: string, timeoutMs = 10_000, logicalOwnerId = "legacy"): Promise<Record<string, unknown>> {
