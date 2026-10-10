@@ -226,10 +226,24 @@ export class AgentManager {
       if (agent.worktree) {
         try {
           const patch = applyImplementerPatch(agent.worktree, response.content);
-          agent.result.commandsRun.push({ command: "git apply --check && git apply", note: patch.note });
+          if (patch.applied) agent.result.commandsRun.push({ command: "git apply --check && git apply", note: patch.note });
           logger.info("subagent_worktree_patch_application", { applied: patch.applied });
           Object.assign(agent.result, worktreeEvidence(agent.worktree));
           logger.info("subagent_worktree_evidence_collected", { changed_file_count: agent.result.changedFiles.length });
+          // A browser-backed agent may return only an acknowledgement ("I'll inspect...")
+          // without actually producing a patch. Never report that as completed work.
+          if (!patch.applied || agent.result.changedFiles.length === 0) {
+            const reason = !patch.applied ? patch.note : "The proposed patch left the worktree unchanged.";
+            agent.error = `Implementer did not deliver source changes: ${reason} Review the agent response and supply scoped file context before retrying.`;
+            agent.state = "failed";
+            agent.pendingPrompt = undefined;
+            logger.warn("subagent_incomplete_implementation", {
+              reason,
+              changed_file_count: agent.result.changedFiles.length,
+              ...this.counts()
+            });
+            return;
+          }
         } catch (error) {
           logger.error("subagent_worktree_patch_application_failed", error);
           throw error;

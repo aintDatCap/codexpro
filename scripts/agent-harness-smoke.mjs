@@ -159,6 +159,21 @@ try {
     assert.equal((await fs.readFile(path.join(completed.worktree.path, 'tracked.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'agent change\n', `validated patch must apply in worktree: ${JSON.stringify(completed.result.commandsRun)}`);
     assert.deepEqual(completed.result.changedFiles, ['tracked.txt']);
     agents.cleanup(workspace, completed.id);
+
+    const prematureBackend = {
+      ...fakeBackend,
+      async send() {
+        return { role: 'assistant', content: "I'll inspect the repository and update the dependencies." };
+      }
+    };
+    const prematureAgents = new AgentManager(agentConfig, guard, prematureBackend);
+    const premature = await prematureAgents.spawn(workspace, { role: 'implementer', task: 'upgrade dependencies' });
+    await waitFor(() => prematureAgents.get(premature.id).state === 'failed', 'acknowledgement must not count as completed work');
+    const rejected = prematureAgents.get(premature.id);
+    assert.match(rejected.error, /did not deliver source changes/i);
+    assert.deepEqual(rejected.result.changedFiles, []);
+    assert.match(rejected.result.rawResponse, /I'll inspect/);
+    prematureAgents.cleanup(workspace, rejected.id);
   }
 
   console.log('agent harness smoke: ok');

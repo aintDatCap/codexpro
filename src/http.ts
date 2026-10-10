@@ -1617,6 +1617,7 @@ async function main(): Promise<void> {
     leaseId: string;
     createdAt: number;
     lastSeenAt: number;
+    activePosts: number;
     sessionId?: string;
     closed?: boolean;
   };
@@ -1688,15 +1689,23 @@ async function main(): Promise<void> {
   function pruneTransports(): void {
     const now = Date.now();
     for (const [sessionId, record] of transports) {
-      if (now - record.lastSeenAt > config.httpSessionTtlMs) {
+      // Legacy ChatGPT clients can create a new session per tool call.
+      // Reclaim idle synthetic sessions before exhausting the cap.
+      const idleTtlMs = record.clientId.startsWith("legacy-http-")
+        ? Math.min(config.httpSessionTtlMs, 120_000)
+        : config.httpSessionTtlMs;
+      if (record.activePosts === 0 && now - record.lastSeenAt > idleTtlMs) {
         transports.delete(sessionId);
-        logger.warn("mcp_transport_pruned", { client_id: record.clientId, lease_id: record.leaseId, mcp_session_id: sessionId, reason: "ttl", idle_ms: now - record.lastSeenAt, active_transport_count: transports.size });
+        logger.warn("mcp_transport_pruned", { client_id: record.clientId, lease_id: record.leaseId, mcp_session_id: sessionId, reason: "ttl", idle_ms: now - record.lastSeenAt, idle_ttl_ms: idleTtlMs, active_transport_count: transports.size });
         logger.warn("abandoned_mcp_transport_pruned", { client_id: record.clientId, lease_id: record.leaseId, mcp_session_id: sessionId, reason: "ttl" });
         closeTransport(record, "ttl");
       }
     }
     while (transports.size > config.maxHttpSessions) {
-      const oldest = [...transports.entries()].sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
+      // Keep in-flight tool calls alive if the pool reaches capacity.
+      const oldest = [...transports.entries()]
+        .filter(([, record]) => record.activePosts === 0)
+        .sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
       if (!oldest) break;
       transports.delete(oldest[0]);
       logger.warn("mcp_transport_pruned", { client_id: oldest[1].clientId, lease_id: oldest[1].leaseId, mcp_session_id: oldest[0], reason: "capacity", active_transport_count: transports.size });
@@ -1833,6 +1842,17 @@ async function main(): Promise<void> {
           });
         }
       } else if (!sessionId && isInitializeRequest(req.body)) {
+        pruneTransports();
+        if (transports.size >= config.maxHttpSessions &&
+            [...transports.values()].every((record) => record.activePosts > 0)) {
+          logger.warn("mcp_transport_capacity_busy", { active_transport_count: transports.size });
+          res.status(503).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "All MCP sessions are processing requests. Retry initialization shortly." },
+            id: null
+          });
+          return;
+        }
         const identity = resolveClientIdentity(req);
         const runtimeClient = await runtime.registerClient(identity.clientId, {
           adapter: "mcp-http",
@@ -1857,6 +1877,7 @@ async function main(): Promise<void> {
               leaseId: runtimeClient.leaseId,
               createdAt: Date.now(),
               lastSeenAt: Date.now(),
+              activePosts: 0,
               sessionId: newSessionId,
               closed: false
             });
@@ -1903,7 +1924,16 @@ async function main(): Promise<void> {
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      const activeRecord = sessionId ? transports.get(sessionId) : undefined;
+      if (activeRecord) activeRecord.activePosts += 1;
+      try {
+        await transport.handleRequest(req, res, req.body);
+      } finally {
+        if (activeRecord) {
+          activeRecord.activePosts -= 1;
+          activeRecord.lastSeenAt = Date.now();
+        }
+      }
     } catch (error) {
       logger.error("mcp_request_failed", error, { mcp_session_id: requestSessionId(req) ?? null });
       console.error(error instanceof Error ? error.stack ?? error.message : String(error));
