@@ -11,17 +11,20 @@ const destination = "https://chatgpt.com/g/g-p-browser-fixture-codexpro/project"
 const fixture = `<!doctype html>
 <html><head><title>Mock ChatGPT projects</title></head><body>
 <aside>
-  <button id="new-project">New project</button>
-  <a id="existing-project" href="/g/g-p-browser-fixture-codexpro/project" hidden>CodexPro - Subagenti</a>
+  <button id="projects-header">Progetti</button>
+  <button id="new-project" hidden>Aggiungi nuovo progetto</button>
+  <button id="existing-project" hidden>CodexPro - Subagenti</button>
+  <button id="new-chat-in-project" hidden>Nuova chat in CodexPro - Subagenti</button>
 </aside>
 <main><h1 id="project-heading" hidden>CodexPro - Subagenti</h1></main>
 <dialog id="create-dialog">
-  <label>Project name <input type="text" aria-label="Project name"></label>
-  <button id="create">Create</button>
+  <label>Nome del progetto <input type="text" aria-label="Nome del progetto"></label>
+  <button id="create">Crea progetto</button>
 </dialog>
 <script>
   const projectUrl = "/g/g-p-browser-fixture-codexpro/project";
   const existing = document.getElementById("existing-project");
+  const newChat = document.getElementById("new-chat-in-project");
   const heading = document.getElementById("project-heading");
   const dialog = document.getElementById("create-dialog");
   const present = () => localStorage.getItem("project-created") === "yes";
@@ -29,7 +32,11 @@ const fixture = `<!doctype html>
     existing.hidden = !present();
     heading.hidden = !present() || location.pathname !== projectUrl;
   }
+  document.getElementById("projects-header").onmouseenter = () => { document.getElementById("new-project").hidden = false; };
   document.getElementById("new-project").onclick = () => dialog.showModal();
+  existing.onclick = () => { existing.dataset.expanded = "true"; };
+  existing.onmouseenter = () => { newChat.hidden = !present(); };
+  newChat.onclick = () => { history.pushState({}, "", projectUrl); render(); };
   document.getElementById("create").onclick = () => {
     if (dialog.querySelector("input").value !== "CodexPro - Subagenti") return;
     localStorage.setItem("project-created", "yes");
@@ -61,6 +68,14 @@ try {
     assert.equal(await reused.ensure(nextPage), destination);
     assert.equal(await nextPage.evaluate(() => localStorage.getItem("creation-count")), "1");
     assert.equal(await nextPage.getByRole("heading", { name: "CodexPro - Subagenti" }).isVisible(), true);
+
+    // Simulate an existing Italian-language project with no create control.
+    await nextPage.evaluate(() => {
+      document.getElementById("new-project").hidden = true;
+    });
+    const buttonOnly = new ChatGPTSubagentProject(path.join(temp, "uncached-profile"));
+    assert.equal(await buttonOnly.ensure(nextPage), destination);
+    assert.equal(await nextPage.evaluate(() => localStorage.getItem("creation-count")), "1");
 
     await context.close();
     console.log("ChatGPT project UI Chromium smoke passed");

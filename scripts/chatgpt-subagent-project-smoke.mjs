@@ -12,7 +12,7 @@ const HOME = "https://chatgpt.com/";
 const PROJECT = "https://chatgpt.com/g/g-p-test-codexpro-subagenti/project";
 const NEW_PROJECT = "https://chatgpt.com/g/g-p-test2-codexpro-subagenti/project";
 
-function locator({ visible = false, count = 1, text = "", href = null, onClick, onFill, onWait, dialog } = {}) {
+function locator({ visible = false, count = 1, text = "", href = null, onClick, onHover, onFill, onWait, dialog } = {}) {
   const value = {
     first() { return this; }, nth() { return this; },
     async isVisible() { return typeof visible === "function" ? visible() : visible; },
@@ -20,6 +20,7 @@ function locator({ visible = false, count = 1, text = "", href = null, onClick, 
     async innerText() { return typeof text === "function" ? text() : text; },
     async getAttribute() { return typeof href === "function" ? href() : href; },
     async click() { await onClick?.(); },
+    async hover() { await onHover?.(); },
     async fill(value) { await onFill?.(value); },
     async waitFor() { await onWait?.(); if (!(await this.isVisible())) throw new Error("not visible"); },
     getByRole(type, options) { return dialog?.(type, options); }
@@ -45,13 +46,22 @@ function fakeUi(state) {
     on() {},
     getByRole(type, options = {}) {
       if (type === "link") {
-        return locator({ visible: () => state.exists, count: state.exists && options.name === DEFAULT_SUBAGENT_PROJECT_NAME ? 1 : 0,
+        return locator({ visible: () => state.exists && !state.buttonSidebar,
+          count: () => state.exists && !state.buttonSidebar && options.name === DEFAULT_SUBAGENT_PROJECT_NAME ? 1 : 0,
           text: DEFAULT_SUBAGENT_PROJECT_NAME, href: () => state.projectUrl });
       }
       if (type === "heading") {
-        return locator({ visible: () => state.exists && page.url() === state.projectUrl && options.name === DEFAULT_SUBAGENT_PROJECT_NAME });
+        return locator({ visible: () => state.exists && !state.buttonSidebar && page.url() === state.projectUrl && options.name === DEFAULT_SUBAGENT_PROJECT_NAME });
       }
-      if (type === "button" && /new project|nuovo progetto/i.test(options.name?.source ?? "")) {
+      if (type === "button" && options.name === DEFAULT_SUBAGENT_PROJECT_NAME && state.buttonSidebar) {
+        return locator({ visible: () => state.exists, count: () => state.exists ? 1 : 0,
+          onHover() { state.hovered = true; }, onClick() { state.expanded = true; } });
+      }
+      if (type === "button" && options.name === `Nuova chat in ${DEFAULT_SUBAGENT_PROJECT_NAME}` && state.buttonSidebar) {
+        return locator({ visible: () => state.exists && state.hovered, count: () => state.exists ? 1 : 0,
+          onClick() { page._url = state.projectUrl; } });
+      }
+      if (type === "button" && /new project|nuovo progetto|aggiungi nuovo progetto/i.test(options.name?.source ?? "")) {
         return state.noControls || state.challenge ? undefined : locator({ visible: true, onClick() { state.dialog = true; } });
       }
       if (type === "dialog") {
@@ -79,7 +89,7 @@ function fakeUi(state) {
       if (selector === "body") return locator({ text: () => state.challenge ? "Verify you are human" : "" });
       if (selector === 'a[href*="/g/g-p-"]') {
         return { filter({ hasText }) {
-          return locator({ visible: () => state.exists, count: state.exists && hasText === DEFAULT_SUBAGENT_PROJECT_NAME ? 1 : 0,
+          return locator({ visible: () => state.exists && !state.buttonSidebar, count: () => state.exists && !state.buttonSidebar && hasText === DEFAULT_SUBAGENT_PROJECT_NAME ? 1 : 0,
             text: DEFAULT_SUBAGENT_PROJECT_NAME, href: () => state.projectUrl });
         } };
       }
@@ -114,6 +124,15 @@ try {
   const existing = new ChatGPTSubagentProject(path.join(root, "other-profile"));
   assert.equal(await existing.ensure(fakeUi(state)), PROJECT);
   assert.equal(state.creations, 1);
+
+  // The current ChatGPT sidebar has project buttons, without project links.
+  // Reuse must not depend on the availability of the New project control.
+  const buttonState = { nav: [], exists: true, buttonSidebar: true, noControls: true, creations: 0, dialog: false, projectUrl: PROJECT };
+  const buttonProject = new ChatGPTSubagentProject(path.join(root, "button-profile"));
+  assert.equal(await buttonProject.ensure(fakeUi(buttonState)), PROJECT);
+  assert.equal(buttonState.creations, 0);
+  assert.equal(await new ChatGPTSubagentProject(path.join(root, "button-profile")).ensure(fakeUi(buttonState)), PROJECT);
+  assert.equal(buttonState.creations, 0);
 
   // If the user deletes the project, a later spawn recreates it once.
   state.exists = false;

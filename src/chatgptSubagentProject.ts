@@ -83,8 +83,61 @@ export class ChatGPTSubagentProject {
     if (!current || current !== expectedUrl) return false;
     const heading = page.getByRole?.("heading", { name: this.name, exact: true });
     try { if (await heading?.first()?.isVisible?.()) return true; } catch {}
-    // A private project's sidebar link is another strong ownership signal.
+    // ChatGPT's newer sidebar renders project navigation as buttons rather than links.
+    const button = page.getByRole?.("button", { name: this.name, exact: true });
+    try { if (await button?.first()?.isVisible?.()) return true; } catch {}
     return (await sidebarProject(page, this.name)) === current;
+  }
+
+  private async reuseSidebarProject(page: any): Promise<string | undefined> {
+    const link = await sidebarProject(page, this.name);
+    if (link) {
+      await page.goto(link, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      if (!(await this.validatePage(page, link))) throw projectError("the existing project could not be verified");
+      await this.save(link);
+      return link;
+    }
+
+    // ChatGPT's project entry is an expand/collapse button. Its hovered
+    // "New chat in [project]" action navigates to the actual project page.
+    const buttons = page.getByRole?.("button", { name: this.name, exact: true });
+    let count = 0;
+    try { count = Number(await buttons?.count?.() ?? 0); } catch {}
+    for (let index = 0; index < Math.min(count, 10); index++) {
+      const button = buttons.nth(index);
+      if (!(await button.isVisible().catch(() => false))) continue;
+      const openNewChat = async (): Promise<boolean> => {
+        await button.hover?.();
+        for (const label of [`Nuova chat in ${this.name}`, `New chat in ${this.name}`]) {
+          const action = page.getByRole?.("button", { name: label, exact: true });
+          if (!(await action?.first()?.isVisible?.().catch(() => false))) continue;
+          await action.first().click();
+          return true;
+        }
+        return false;
+      };
+      try {
+        if (!(await openNewChat())) {
+          await button.click();
+          // Older UIs navigate on the project button itself; current UIs
+          // only expand it, in which case try the nested new-chat action.
+          if (!validatedChatGPTProjectUrl(String(page.url?.() ?? ""))) {
+            if (!(await openNewChat())) throw projectError("the project navigation action is unavailable");
+          }
+        }
+        await page.waitForURL((url: URL) => Boolean(validatedChatGPTProjectUrl(url.toString())), { timeout: 15_000 });
+        const url = validatedChatGPTProjectUrl(String(page.url?.() ?? ""));
+        if (!url || !(await this.validatePage(page, url))) {
+          throw projectError("the existing project could not be verified");
+        }
+        await this.save(url);
+        return url;
+      } catch (error) {
+        if (error instanceof CodexProError) throw error;
+        throw projectError("the existing project button did not open a verified project");
+      }
+    }
+    return undefined;
   }
 
   async ensure(page: any): Promise<string> {
@@ -101,11 +154,20 @@ export class ChatGPTSubagentProject {
     }
 
     await page.goto(CHATGPT_HOME, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    // Wait for sidebar hydration; never create duplicates just because links
-    // have not rendered at the first DOMContentLoaded event.
+    // Existing projects must be checked before requiring a creation control.
+    // Wait for client-side hydration to avoid creating duplicates.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const existing = await this.reuseSidebarProject(page);
+      if (existing) return existing;
+      if (attempt < 7) await page.waitForTimeout?.(500);
+    }
+
+    // In the current sidebar the add-project control appears on hover.
+    const projectsHeader = page.getByRole?.("button", { name: /^(?:projects|progetti)$/i });
+    try { await projectsHeader?.first()?.hover?.(); } catch {}
     const controls = [
-      page.getByRole?.("button", { name: /^(?:new project|nuovo progetto)$/i }),
-      page.getByRole?.("link", { name: /^(?:new project|nuovo progetto)$/i })
+      page.getByRole?.("button", { name: /^(?:new project|add new project|nuovo progetto|aggiungi nuovo progetto)$/i }),
+      page.getByRole?.("link", { name: /^(?:new project|add new project|nuovo progetto|aggiungi nuovo progetto)$/i })
     ].filter(Boolean);
     let start: any;
     for (const candidate of controls) {
@@ -127,20 +189,15 @@ export class ChatGPTSubagentProject {
       catch (error) { if (error instanceof ManualBrowserCheckError) throw error; }
       throw projectError("the New project control is unavailable (login, permissions or UI change)");
     }
-    const existing = await sidebarProject(page, this.name);
-    if (existing) {
-      await page.goto(existing, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      if (!(await this.validatePage(page, existing))) throw projectError("the existing project could not be verified");
-      await this.save(existing);
-      return existing;
-    }
-
     // If ChatGPT changed its sidebar or project dialog, stop rather than
     // silently writing conversations outside the intended project.
     await start.first().click();
 
     const dialog = page.getByRole?.("dialog");
-    if (!dialog || !(await dialog.first().isVisible().catch(() => false))) {
+    try {
+      if (!dialog) throw new Error("no dialog");
+      await dialog.first().waitFor({ state: "visible", timeout: 5_000 });
+    } catch {
       throw projectError("the project creation dialog is unavailable");
     }
     const input = dialog.getByRole?.("textbox") ?? dialog.locator?.('input[type="text"]');
