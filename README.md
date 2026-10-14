@@ -55,7 +55,7 @@ CodexPro auth is the token already in that URL. Do not share the URL.
 | --- | --- |
 | ![Open Plugins and click the plus button](docs/images/chatgpt-plugins-add.png) | ![Complete the New Plugin form](docs/images/chatgpt-plugin-details.png) |
 
-Daily use from the same repo:
+Daily use from the same repo (Windows sleep/terminal reliability: [guide](docs/windows-reliability.md)):
 
 ```bash
 codexpro start

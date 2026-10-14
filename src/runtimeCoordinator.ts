@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventLoopPauseTracker } from "./clockPause.js";
 import type { AgentBackend, AgentRole } from "./agentBackend.js";
 import { AgentManager, type ManagedAgent } from "./agentManager.js";
 import { createAgentBackend } from "./agentBackendFactory.js";
@@ -191,6 +192,7 @@ export class RuntimeCoordinator {
 
   private readonly logger: CodexProLogger;
   private readonly now: () => number;
+  private readonly pauseTracker: EventLoopPauseTracker;
   private readonly leaseTtlMs: number;
   private readonly clients = new Map<string, RuntimeClientState>();
   private readonly leases = new Map<string, string>();
@@ -206,6 +208,7 @@ export class RuntimeCoordinator {
     this.logger = dependencies.logger ?? noopLogger;
     this.now = dependencies.now ?? Date.now;
     this.leaseTtlMs = Math.max(100, dependencies.leaseTtlMs ?? config.clientLeaseTtlMs);
+    this.pauseTracker = new EventLoopPauseTracker(this.now, Math.max(100, dependencies.sweepIntervalMs ?? Math.min(this.leaseTtlMs, 60_000)));
     this.guard = new PathGuard(config);
     this.gitService = new GitService(config, this.guard);
     this.worktreeManager = new WorktreeManager(config);
@@ -240,6 +243,15 @@ export class RuntimeCoordinator {
       }, interval);
       this.sweepTimer.unref();
     }
+  }
+
+  private recoverAfterEventLoopPause(): void {
+    const pausedMs = this.pauseTracker.check();
+    if (!pausedMs) return;
+    for (const client of this.clients.values()) {
+      if (client.status === "active") client.expiresAt += pausedMs;
+    }
+    this.logger.warn("runtime_pause_recovered", { paused_ms: pausedMs, logical_client_count: this.clients.size });
   }
 
   async registerClient(rawClientId: unknown, options: RegisterClientOptions): Promise<RuntimeClientHandle> {
@@ -310,6 +322,7 @@ export class RuntimeCoordinator {
   }
 
   renewLease(binding: RuntimeClientBinding, operationId?: string): void {
+    this.recoverAfterEventLoopPause();
     const state = this.clientState(binding, false);
     const now = this.now();
     if (state.expiresAt <= now) {
@@ -398,6 +411,7 @@ export class RuntimeCoordinator {
   }
 
   async sweepExpiredLeases(): Promise<number> {
+    this.recoverAfterEventLoopPause();
     const now = this.now();
     const expired = [...this.clients.values()]
       .filter((state) => state.status === "active" && state.expiresAt <= now)

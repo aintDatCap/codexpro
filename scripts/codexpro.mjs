@@ -18,6 +18,7 @@ import {
 
 import { requestChatgptBrowserOpen } from './chatgpt-browser-control.mjs';
 import { runVmCli } from './vm-cli.mjs';
+import { startWindowsKeepAwake } from './windows-keep-awake.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UNTRACKED_FILE_HASH_BYTES = 64 * 1024;
@@ -138,6 +139,8 @@ Options:
   --no-copy-url             Do not copy the Server URL.
   --open-chatgpt            Open ChatGPT connector settings after the URL is ready.
   --headless                Run without prompts, clipboard, browser opening, or the control panel.
+  --keep-awake              Windows: prevent automatic sleep while CodexPro runs; display can turn off.
+  --no-keep-awake           Allow automatic sleep (default).
   --no-auth                 Disable bearer-token auth. Only allowed with --tunnel none.
   --log-requests            Print redacted HTTP request and tool-call logs from the local MCP server.
   connection-test           Start a read-only connector with request logging and no bash or tool cards.
@@ -361,6 +364,8 @@ function parseArgs(argv) {
     else if (key === 'chatgpt-browser-auto-start') out.chatgptBrowserAutoStart = true;
     else if (key === 'no-chatgpt-browser-auto-start') out.chatgptBrowserAutoStart = false;
     else if (key === 'headless') out.headless = true;
+    else if (key === 'keep-awake') out.keepAwake = true;
+    else if (key === 'no-keep-awake') out.keepAwake = false;
     else if (key === 'no-profile') out.noProfile = true;
     else if (key === 'clear-projects') out.clearProjects = true;
     else if (key === 'save-config') out.saveConfig = true;
@@ -832,6 +837,9 @@ async function findReusableRuntime(root, expected) {
   if (expected.hostname && activeHostname && activeHostname !== expected.hostname) mismatches.push(`hostname=${activeHostname}`);
   if (mismatches.length) {
     throw new Error(`A live CodexPro runtime already owns this workspace (PID ${runtime.pid}) but does not match this launch: ${mismatches.join(', ')}. Stop it before changing the port, tunnel, or hostname.`);
+  }
+  if (runtime.tunnel !== 'none' && runtime.tunnelPid && !processAlive(runtime.tunnelPid)) {
+    throw new Error(`The CodexPro launcher (PID ${runtime.pid}) is still alive but its tunnel process exited. Stop and restart CodexPro.`);
   }
   if (!await localRuntimeResponds(expected.localBase)) {
     throw new Error(`A live CodexPro launcher (PID ${runtime.pid}) owns this workspace, but its local HTTP runtime is not responding. Stop that launcher before starting another one.`);
@@ -3988,26 +3996,34 @@ function runControlPanel(details, cleanup = cleanupChildren) {
   });
 }
 
-function waitForUnexpectedRuntimeExit(server, cleanup = cleanupChildren) {
+function waitForUnexpectedRuntimeExit(child, cleanup, label, isStopping) {
   return new Promise((_, reject) => {
+    let failed = false;
     const fail = (code, signal, error) => {
-      cleanup();
+      if (failed || isStopping()) return;
+      failed = true;
       const detail = error
         ? error instanceof Error ? error.message : String(error)
         : `code=${code ?? 'null'} signal=${signal ?? 'null'}`;
-      reject(new Error(`CodexPro HTTP runtime exited unexpectedly (${detail}).`));
+      // Cleanup the sibling processes even if the interactive terminal is minimized.
+      void Promise.resolve().then(cleanup).catch((cleanupError) => {
+        console.error(`CodexPro cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+      }).finally(() => reject(new Error(`${label} exited unexpectedly (${detail}). Restart CodexPro to restore the connection.`)));
     };
-    if (server.exitCode !== null || server.signalCode !== null) {
-      fail(server.exitCode, server.signalCode);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      fail(child.exitCode, child.signalCode);
       return;
     }
-    server.once('error', (error) => fail(null, null, error));
-    server.once('exit', (code, signal) => fail(code, signal));
+    child.once('error', (error) => fail(null, null, error));
+    child.once('exit', (code, signal) => fail(code, signal));
   });
 }
 
-function holdRuntime(server, details, cleanup, headless) {
-  return headless ? waitForUnexpectedRuntimeExit(server, cleanup) : runControlPanel(details, cleanup);
+function holdRuntime(server, details, cleanup, headless, tunnelProcess, isStopping) {
+  const monitors = [waitForUnexpectedRuntimeExit(server, cleanup, 'CodexPro HTTP runtime', isStopping)];
+  if (tunnelProcess) monitors.push(waitForUnexpectedRuntimeExit(tunnelProcess, cleanup, 'CodexPro tunnel', isStopping));
+  if (!headless) monitors.push(runControlPanel(details, cleanup));
+  return Promise.race(monitors);
 }
 
 async function main() {
@@ -4117,6 +4133,8 @@ async function main() {
   let profile = args.noProfile ? {} : loadWorkspaceProfile(root);
   profile = await maybeConfigureFirstRun(root, args, profile);
   const effectiveArgs = { ...profile, ...args };
+  const keepAwake = optionBool(args, profile, 'keepAwake', ['CODEXPRO_KEEP_AWAKE'], false);
+  if (keepAwake && process.platform !== 'win32') throw new Error('--keep-awake is supported only on Windows.');
   if (profile.profilePath && !args.noProfile) {
     statusLine('ok', `Using saved profile: ${profile.profilePath}`);
     const summary = profileSummary(profile);
@@ -4227,6 +4245,7 @@ async function main() {
   });
   if (reusableRuntime) {
     statusLine('ok', `Reusing existing CodexPro runtime (launcher PID ${reusableRuntime.pid}, HTTP PID ${reusableRuntime.runtimePid ?? 'unknown'})`);
+    if (keepAwake) statusLine('warn', 'Restart the existing launcher with --keep-awake to inhibit automatic sleep.');
     return;
   }
   await assertPortAvailable(host, port);
@@ -4239,6 +4258,7 @@ async function main() {
     labelValue('Codex sessions', codexSessions),
     ...(bashSession ? [labelValue('Bash session', `${bashSession}${requireBashSession ? ' required' : ''}`)] : []),
     labelValue('Local URL', `http://${host}:${port}/mcp`),
+    ...(keepAwake ? [labelValue('Windows sleep', 'Prevent automatic sleep while running')] : []),
     labelValue(
       'Tunnel',
       tunnel === 'cloudflare'
@@ -4257,6 +4277,7 @@ async function main() {
   statusLine('wait', 'Starting local MCP server');
   const server = spawnLogged('codexpro', process.execPath, [httpPath], { cwd: projectRoot, env: serverEnv, verbose: verboseLogs, ipc: true });
   let cloudflared;
+  let wakeGuard;
   let cleanupTunnelCredentials = () => {};
   let cleanupPromise;
   const cleanup = () => {
@@ -4267,6 +4288,7 @@ async function main() {
         }
         cleanupTunnelCredentials();
         cleanupChildren();
+        if (wakeGuard) await wakeGuard.stop();
         clearRuntimeConnection(root);
       })();
     }
@@ -4274,6 +4296,15 @@ async function main() {
   };
   process.on('SIGINT', () => { void cleanup().finally(() => process.exit(130)); });
   process.on('SIGTERM', () => { void cleanup().finally(() => process.exit(143)); });
+
+  if (keepAwake) {
+    try {
+      wakeGuard = await startWindowsKeepAwake();
+      statusLine('ok', 'Windows automatic sleep inhibited; screen may turn off, manual sleep remains available');
+    } catch (error) {
+      throw new Error(`Cannot enable --keep-awake: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   await waitForHealth(`${localBase}/healthz`, token);
   statusLine('ok', `Local MCP ready at ${localBase}/mcp`);
@@ -4317,7 +4348,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await holdRuntime(server, details, cleanup, headless);
+    await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
     return;
   }
 
@@ -4363,7 +4394,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await holdRuntime(server, details, cleanup, headless);
+    await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
     return;
   }
 
@@ -4376,6 +4407,7 @@ async function main() {
     tailscaleArgs.push(localBase);
     statusLine('wait', `Opening Tailscale Funnel for ${publicBase}`);
     cloudflared = spawnLogged('tailscale', tailscalePath, tailscaleArgs, { cwd: root, env: process.env, verbose: verboseLogs });
+    runtimeOptions.tunnelPid = cloudflared.pid ?? null;
     try {
       await waitForPublicHealth(publicBase, token, cloudflared, 'Tailscale Funnel');
     } catch (error) {
@@ -4409,7 +4441,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await holdRuntime(server, details, cleanup, headless);
+    await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
     return;
   }
 
@@ -4435,7 +4467,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await holdRuntime(server, details, cleanup, headless);
+    await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
     return;
   }
 
@@ -4450,6 +4482,7 @@ async function main() {
       cleanupTunnelCredentials = removeCredentials;
       try {
         cloudflared = spawnLogged('cloudflared', cloudflaredPath, ['tunnel', '--url', localBase, '--credentials-file', credentialsPath, 'run', quickTunnel.id], { cwd: root, env: process.env, verbose: verboseLogs });
+        runtimeOptions.tunnelPid = cloudflared.pid ?? null;
       } catch (error) {
         removeCredentials();
         throw error;
@@ -4460,6 +4493,7 @@ async function main() {
       publicBase = `https://${quickTunnel.hostname}`;
     } else {
       cloudflared = spawnLogged('cloudflared', cloudflaredPath, ['tunnel', '--url', localBase], { cwd: root, env: process.env, verbose: verboseLogs });
+      runtimeOptions.tunnelPid = cloudflared.pid ?? null;
       publicBase = await waitForCloudflareUrl(cloudflared);
     }
     const details = printConnectorBlock(`${publicBase}/mcp`, token, {
@@ -4479,7 +4513,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await holdRuntime(server, details, cleanup, headless);
+    await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
     return;
   }
 
@@ -4512,6 +4546,7 @@ async function main() {
     ? { ...process.env, TUNNEL_TOKEN: cloudflareToken }
     : process.env;
   cloudflared = spawnLogged('cloudflared', cloudflaredPath, cloudflaredArgs, { cwd: root, env: cloudflaredEnv, verbose: verboseLogs });
+  runtimeOptions.tunnelPid = cloudflared.pid ?? null;
   try {
     await waitForPublicHealth(publicBase, token, cloudflared);
   } catch (error) {
@@ -4549,7 +4584,7 @@ async function main() {
     connectionTest
   });
   saveRuntimeConnection(root, details, runtimeOptions);
-  await holdRuntime(server, details, cleanup, headless);
+  await holdRuntime(server, details, cleanup, headless, cloudflared, () => Boolean(cleanupPromise));
 }
 
 main().catch((error) => {

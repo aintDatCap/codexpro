@@ -191,6 +191,11 @@ try {
   const expiring = await runtime.registerClient("client-expiring", { adapter: "mcp-http" });
   await browserManager.open("expiring-page", undefined, expiring.browserOwnerId());
   await expiring.spawnAgent(expiring.workspace(), { task: "expire", role: "explorer" });
+  // A sleeping PC cannot run the lease sweep. Recover paused sessions on resume.
+  const resumed = await runtime.registerClient("client-resumed", { adapter: "mcp-http" });
+  now += 3_600_000;
+  resumed.renew();
+  assert.equal(runtime.snapshot().logicalClientCount, 3, "resume must preserve inactive clients until their next real TTL");
   now += 101;
   const expiredCount = await runtime.sweepExpiredLeases();
   assert.ok(expiredCount >= 1, "lease sweep must expire inactive clients");
@@ -204,6 +209,7 @@ try {
     "lease_created",
     "lease_renewed",
     "lease_expired",
+    "runtime_pause_recovered",
     "lease_released",
     "transport_attached",
     "transport_detached",

@@ -20,6 +20,7 @@ import {
 import { redactSensitiveText, redactStructured } from "./redact.js";
 import { CodexProError } from "./guard.js";
 import { RuntimeCoordinator, normalizeClientId, type RuntimeClientHandle } from "./runtimeCoordinator.js";
+import { EventLoopPauseTracker } from "./clockPause.js";
 import { createCodexProServer } from "./server.js";
 import type { LogSnapshot } from "./logging.js";
 import { createCodexProLogger, withLogContext } from "./logging.js";
@@ -1686,7 +1687,14 @@ async function main(): Promise<void> {
       .catch((error) => transportLogger.error("mcp_transport_close_failed", error, { reason }));
   }
 
+  const transportPauseTracker = new EventLoopPauseTracker(Date.now, Math.min(config.httpSessionTtlMs, 60_000));
+
   function pruneTransports(): void {
+    const pausedMs = transportPauseTracker.check();
+    if (pausedMs) {
+      for (const record of transports.values()) record.lastSeenAt += pausedMs;
+      logger.warn("http_transport_pause_recovered", { paused_ms: pausedMs, transport_count: transports.size });
+    }
     const now = Date.now();
     for (const [sessionId, record] of transports) {
       // Legacy ChatGPT clients can create a new session per tool call.
