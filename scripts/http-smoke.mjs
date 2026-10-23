@@ -161,13 +161,9 @@ await expectHttpTokenRequired('non-loopback-allow-no-token', { CODEXPRO_HOST: '0
 await expectHttpTokenRequired('tunnel-mode', { CODEXPRO_TUNNEL_MODE: '1' });
 await expectWeakHttpTokenRejected();
 
-let httpClientCounter = 0;
-
-async function withClient(url, fn, clientId = `http-smoke-client-${++httpClientCounter}`) {
+async function withClient(url, fn) {
   const client = new Client({ name: 'codexpro-http-smoke', version: '0.0.0' });
-  const transport = new StreamableHTTPClientTransport(new URL(url), {
-    requestInit: { headers: { 'CodexPro-Client-Id': clientId } }
-  });
+  const transport = new StreamableHTTPClientTransport(new URL(url));
   try {
     await client.connect(transport);
     return await fn(client, transport);
@@ -549,73 +545,28 @@ try {
   }
 
   const mcpUrl = `${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`;
-  const correlatedClientId = 'http-smoke-correlated';
-  let correlatedSessionId = '';
-  let reconnectedSessionId = '';
-  let correlatedLeaseId = '';
-  let correlatedWorkspaceId = '';
-  await withClient(mcpUrl, async (firstClient, firstTransport) => {
-    correlatedSessionId = firstTransport.sessionId ?? '';
-    if (!correlatedSessionId) throw new Error('first HTTP MCP client did not receive a session id');
-    const runtimeStatus = await callTool(firstClient, 'runtime_status');
-    correlatedLeaseId = runtimeStatus.structuredContent.lease_id;
+  // Two transport sessions with no custom identity share explicit roots and MCP tools.
+  let firstSessionId = '';
+  await withClient(mcpUrl, async (firstClient, transport) => {
+    firstSessionId = transport.sessionId;
     const opened = await callTool(firstClient, 'open_current_workspace', { include_tree: false });
-    correlatedWorkspaceId = opened.structuredContent.workspace_id;
     const changes = await callTool(firstClient, 'show_changes', {
-      workspace_id: correlatedWorkspaceId,
-      path: 'session-checkpoint.txt'
+      workspace_id: opened.structuredContent.workspace_id, path: 'session-checkpoint.txt'
     });
-    if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
-      throw new Error(`first logical client did not receive its workspace changes: ${JSON.stringify(changes.structuredContent)}`);
+    if (!changes.structuredContent.changed) throw new Error('first transport did not see expected changes');
+  });
+  await withClient(mcpUrl, async (secondClient, transport) => {
+    if (!transport.sessionId || transport.sessionId === firstSessionId) {
+      throw new Error('expected separate MCP transport sessions');
     }
-  }, correlatedClientId);
-
-  await withClient(mcpUrl, async (reconnectedClient, reconnectedTransport) => {
-    reconnectedSessionId = reconnectedTransport.sessionId ?? '';
-    if (!reconnectedSessionId || reconnectedSessionId === correlatedSessionId) {
-      throw new Error('logical reconnect did not create a distinct MCP transport session');
-    }
-    const runtimeStatus = await callTool(reconnectedClient, 'runtime_status');
-    if (runtimeStatus.structuredContent.client_id !== correlatedClientId || runtimeStatus.structuredContent.lease_id !== correlatedLeaseId) {
-      throw new Error(`logical reconnect did not preserve client/lease identity: ${JSON.stringify(runtimeStatus.structuredContent)}`);
-    }
-    const changes = await callTool(reconnectedClient, 'show_changes', {
-      workspace_id: correlatedWorkspaceId,
-      path: 'session-checkpoint.txt'
-    });
-    if (!changes.structuredContent.review_checkpoint_hit || changes.structuredContent.changed) {
-      throw new Error(`logical reconnect did not preserve review state: ${JSON.stringify(changes.structuredContent)}`);
-    }
-  }, correlatedClientId);
-
-  const correlatedLogEntries = [];
-  for (const name of await fs.readdir(authorizedJson.logs.runDir)) {
-    if (!/^codexpro-\d+(?:\.\d+)?\.jsonl$/.test(name)) continue;
-    const text = await fs.readFile(path.join(authorizedJson.logs.runDir, name), 'utf8');
-    for (const line of text.split(/\r?\n/).filter(Boolean)) correlatedLogEntries.push(JSON.parse(line));
-  }
-  for (const sessionId of [correlatedSessionId, reconnectedSessionId]) {
-    const correlatedTool = correlatedLogEntries.find((entry) =>
-      entry.event === 'mcp_tool_completed' &&
-      entry.client_id === correlatedClientId &&
-      entry.lease_id === correlatedLeaseId &&
-      entry.mcp_session_id === sessionId
-    );
-    if (!correlatedTool?.tool_call_id || !correlatedTool?.operation_id) {
-      throw new Error(`persistent logs did not correlate stable logical identity through MCP session ${sessionId}`);
-    }
-  }
-
-  await withClient(mcpUrl, async (secondClient) => {
     const opened = await callTool(secondClient, 'open_current_workspace', { include_tree: false });
     const changes = await callTool(secondClient, 'show_changes', {
-      workspace_id: opened.structuredContent.workspace_id,
-      path: 'session-checkpoint.txt'
+      workspace_id: opened.structuredContent.workspace_id, path: 'session-checkpoint.txt'
     });
     if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
-      throw new Error(`review checkpoint leaked between distinct logical clients: ${JSON.stringify(changes.structuredContent)}`);
+      throw new Error('another conversation lost its diff due to shared review checkpoint');
     }
-  }, 'http-smoke-distinct-client');
+  });
 
   const unknownSession = '00000000-0000-4000-8000-000000000000';
   await expectSessionNotFound(await postToolsListWithSession(baseUrl, token, unknownSession), 'unknown POST session');
@@ -740,37 +691,38 @@ try {
 
   await withClient(mcpUrl, async (firstClient) => {
     const alternate = await callTool(firstClient, 'open_workspace', {
-      root: alternateRoot,
-      include_tree: false
+      root: alternateRoot, include_tree: false
     });
-    const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' });
-    const firstText = firstSelected.content?.find?.((part) => part.type === 'text')?.text ?? '';
-    if (!firstText.includes('http alternate workspace')) {
-      throw new Error(`first HTTP session did not retain selected workspace: ${firstText}`);
+    const explicitRead = await callTool(firstClient, 'read', {
+      workspace_id: alternate.structuredContent.workspace_id, path: 'selected.txt'
+    });
+    if (!explicitRead.structuredContent.text.includes('http alternate workspace')) {
+      throw new Error('explicit workspace_id did not resolve alternate root');
     }
-
     await withClient(mcpUrl, async (secondClient) => {
-      const secondList = await callTool(secondClient, 'list_workspaces');
-      if (
-        secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
-        || secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
-      ) {
-        throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
+      const defaultRead = await callTool(secondClient, 'read', { path: 'session-checkpoint.txt' });
+      if (!defaultRead.structuredContent.text) {
+        throw new Error('another transport changed the default root');
+      }
+      const sharedRead = await callTool(secondClient, 'read', {
+        workspace_id: alternate.structuredContent.workspace_id, path: 'selected.txt'
+      });
+      if (!sharedRead.structuredContent.text.includes('http alternate workspace')) {
+        throw new Error('shared root ID was not addressable from another transport');
       }
     });
-
-    const firstList = await callTool(firstClient, 'list_workspaces');
-    if (firstList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
-      throw new Error(`first HTTP session lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
-    }
     const nestedRoot = path.join(alternateRoot, 'nested-reconnect');
     await fs.mkdir(nestedRoot);
     await fs.writeFile(path.join(nestedRoot, 'proof.txt'), 'nested reconnect proof');
     const nested = await callTool(firstClient, 'open_workspace', { root: nestedRoot, include_tree: false });
     await withClient(mcpUrl, async (reconnected) => {
       await callTool(reconnected, 'reconnect_workspace', { workspace_id: nested.structuredContent.workspace_id });
-      const proof = await callTool(reconnected, 'read', { path: 'proof.txt' });
-      if (!proof.structuredContent.text.includes('nested reconnect proof')) throw new Error('nested workspace was not recovered');
+      const proof = await callTool(reconnected, 'read', {
+        workspace_id: nested.structuredContent.workspace_id, path: 'proof.txt'
+      });
+      if (!proof.structuredContent.text.includes('nested reconnect proof')) {
+        throw new Error('explicit nested workspace was not recovered');
+      }
     });
   });
 
@@ -820,14 +772,11 @@ try {
   const heldTransports = [];
   try {
     for (let index = 0; index < 8; index += 1) {
-      const clientId = `transport-held-${index}`;
       const heldClient = new Client({ name: 'codexpro-http-smoke-held', version: '0.0.0' });
-      const heldTransport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
-        requestInit: { headers: { 'CodexPro-Client-Id': clientId } }
-      });
+      const heldTransport = new StreamableHTTPClientTransport(new URL(mcpUrl));
       await heldClient.connect(heldTransport);
       await heldClient.listTools();
-      heldTransports.push({ clientId, client: heldClient, transport: heldTransport });
+      heldTransports.push({ client: heldClient, transport: heldTransport });
     }
 
     const transportHealthResponse = await fetch(`${baseUrl}/healthz`, {
@@ -837,10 +786,6 @@ try {
     if (transportHealth.transports?.active > 4) {
       throw new Error(`transport retention exceeded configured bound: ${JSON.stringify(transportHealth.transports)}`);
     }
-    if (transportHealth.runtime?.logicalClientCount < heldTransports.length) {
-      throw new Error(`transport pruning incorrectly released logical clients: ${JSON.stringify(transportHealth.runtime)}`);
-    }
-
     const oldestSession = heldTransports[0].transport.sessionId;
     if (!oldestSession) throw new Error('held transport did not receive a session id');
     await expectSessionNotFound(
@@ -852,36 +797,21 @@ try {
       headers: { Authorization: `Bearer ${token}` }
     });
     const pruneLogs = await pruneLogsResponse.json();
-    if (!pruneLogs.entries?.some?.((entry) => entry.event === 'abandoned_mcp_transport_pruned' && entry.reason === 'capacity')) {
-      throw new Error('capacity pruning did not emit abandoned_mcp_transport_pruned');
+    if (!pruneLogs.entries?.some?.(entry => entry.event === 'mcp_transport_pruned' && entry.reason === 'capacity')) {
+      throw new Error('capacity pruning did not emit mcp_transport_pruned');
     }
-
-    await withClient(mcpUrl, async (reconnected) => {
-      const status = await callTool(reconnected, 'runtime_status');
-      if (status.structuredContent.client_id !== heldTransports[0].clientId) {
-        throw new Error('pruned transport client did not retain logical identity on reconnect');
-      }
-    }, heldTransports[0].clientId);
   } finally {
     for (const held of heldTransports) {
       await held.client.close().catch(() => {});
     }
   }
 
-  const shutdownClientId = 'http-smoke-explicit-shutdown';
-  let shutdownLeaseId = '';
   await withClient(mcpUrl, async (client) => {
     const status = await callTool(client, 'runtime_status');
-    shutdownLeaseId = status.structuredContent.lease_id;
-    const shutdown = await callTool(client, 'shutdown_client');
-    if (!shutdown.structuredContent.released) throw new Error('shutdown_client did not release its lease');
-  }, shutdownClientId);
-  await withClient(mcpUrl, async (client) => {
-    const status = await callTool(client, 'runtime_status');
-    if (status.structuredContent.lease_id === shutdownLeaseId) {
-      throw new Error('explicit shutdown did not force a fresh lease on reconnect');
+    if ('client_id' in status.structuredContent || 'lease_id' in status.structuredContent) {
+      throw new Error('runtime status exposed an artificial logical client identity');
     }
-  }, shutdownClientId);
+  });
 
 } finally {
   child.kill('SIGTERM');

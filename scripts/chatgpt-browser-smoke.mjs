@@ -512,7 +512,7 @@ try {
 
   const cliSource = await fs.readFile(path.resolve(oldCwd, 'scripts', 'codexpro.mjs'), 'utf8');
   const httpSource = await fs.readFile(path.resolve(oldCwd, 'src', 'http.ts'), 'utf8');
-  const runtimeSource = await fs.readFile(path.resolve(oldCwd, 'src', 'runtimeCoordinator.ts'), 'utf8');
+  const runtimeSource = await fs.readFile(path.resolve(oldCwd, 'src', 'runtimeServices.ts'), 'utf8');
   const managerSource = await fs.readFile(path.resolve(oldCwd, 'src', 'chatgptBrowserManager.ts'), 'utf8');
   assert.match(cliSource, /normalized === 'b'/);
   assert.match(cliSource, /requestChatgptBrowserOpen\(details\)/);

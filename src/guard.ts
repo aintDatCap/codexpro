@@ -60,7 +60,6 @@ function closestExistingParent(absPath: string): string {
 
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
-  private selectedWorkspaceId?: string;
 
   constructor(private readonly config: CodexProConfig, private readonly knownRoots = new Map<string, string>()) {}
 
@@ -70,9 +69,7 @@ export class WorkspaceManager {
   }
 
   selectDefaultWorkspace(): Workspace {
-    const workspace = this.defaultWorkspace();
-    this.selectedWorkspaceId = workspace.id;
-    return workspace;
+    return this.defaultWorkspace();
   }
 
   openWorkspace(rootInput?: string, options: { select?: boolean } = {}): Workspace {
@@ -94,27 +91,17 @@ export class WorkspaceManager {
     }
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
-    if (existing) {
-      if (options.select !== false) this.selectedWorkspaceId = existing.id;
-      return existing;
-    }
+    if (existing) return existing;
 
     const id = workspaceIdForRoot(realRoot);
     this.knownRoots.set(id, realRoot);
     const workspace = { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
-    if (options.select !== false) this.selectedWorkspaceId = id;
     return workspace;
   }
 
   getWorkspace(id?: string): Workspace {
-    if (!id) {
-      if (this.selectedWorkspaceId) {
-        const selected = this.workspaces.get(this.selectedWorkspaceId);
-        if (selected) return selected;
-      }
-      return this.selectDefaultWorkspace();
-    }
+    if (!id) return this.defaultWorkspace();
     const workspace = this.workspaces.get(id);
     if (!workspace) {
       const configuredRoot = this.knownRoots.get(id) ?? this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);

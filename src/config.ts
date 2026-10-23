@@ -45,7 +45,6 @@ export interface CodexProConfig {
   maxSearchResults: number;
   maxHttpSessions: number;
   httpSessionTtlMs: number;
-  clientLeaseTtlMs: number;
   blockedGlobs: string[];
   contextDir: string;
   toolCards: boolean;
@@ -415,7 +414,6 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     maxSearchResults: numberFrom(process.env.CODEXPRO_MAX_SEARCH_RESULTS, 200, 5, 2_000),
     maxHttpSessions: numberFrom(process.env.CODEXPRO_MAX_HTTP_SESSIONS, 64, 1, 512),
     httpSessionTtlMs: numberFrom(process.env.CODEXPRO_HTTP_SESSION_TTL_MS, 30 * 60_000, 60_000, 24 * 60 * 60_000),
-    clientLeaseTtlMs: numberFrom(process.env.CODEXPRO_CLIENT_LEASE_TTL_MS, 60 * 60_000, 60_000, 7 * 24 * 60 * 60_000),
     blockedGlobs: [...DEFAULT_BLOCKED_GLOBS, ...extraBlockedGlobs, ...chatgptBrowserProfileGlobs],
     contextDir: contextDirFrom(process.env.CODEXPRO_CONTEXT_DIR),
     toolCards: boolFrom(toolCardsArg ?? process.env.CODEXPRO_TOOL_CARDS, false),

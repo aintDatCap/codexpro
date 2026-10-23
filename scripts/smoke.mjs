@@ -417,23 +417,20 @@ const alternate = await client.request('tools/call', {
   name: 'open_workspace',
   arguments: { root: alternateWorkspace, include_tree: false }
 });
-const selectedRead = await client.request('tools/call', {
+const alternateRead = await client.request('tools/call', {
   name: 'read',
-  arguments: { path: 'selected.txt' }
+  arguments: { workspace_id: alternate.structuredContent.workspace_id, path: 'selected.txt' }
 });
-const selectedText = selectedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
-if (!selectedText.includes('alternate workspace')) {
-  throw new Error(`read without workspace_id did not use selected workspace: ${selectedText}`);
+if (!alternateRead.structuredContent.text.includes('alternate workspace')) {
+  throw new Error('explicit workspace_id did not resolve the alternate project');
 }
 const listedWorkspaces = await client.request('tools/call', { name: 'list_workspaces', arguments: {} });
-if (listedWorkspaces.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
-  throw new Error(`list_workspaces did not report selected workspace: ${JSON.stringify(listedWorkspaces.structuredContent)}`);
+if (listedWorkspaces.structuredContent.default_workspace_id !== current.structuredContent.workspace_id) {
+  throw new Error('another workspace changed the default root');
 }
-const resetCurrent = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
-const resetRead = await client.request('tools/call', { name: 'read', arguments: { path: 'demo.txt' } });
-const resetText = resetRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
-if (resetCurrent.structuredContent.workspace_id !== current.structuredContent.workspace_id || !resetText.includes('omega')) {
-  throw new Error('open_current_workspace did not restore the launch workspace selection');
+const defaultRead = await client.request('tools/call', { name: 'read', arguments: { path: 'demo.txt' } });
+if (!defaultRead.structuredContent.text.includes('omega')) {
+  throw new Error('missing workspace_id no longer targets the configured default root');
 }
 const selfTest = await client.request('tools/call', {
   name: 'codexpro_self_test',
@@ -749,7 +746,7 @@ if (!changes.structuredContent.analysis?.related_tests?.some((file) => file.path
 if (!changes.structuredContent.analysis?.recommended_commands?.some((item) => item.command === 'npm test')) {
   throw new Error(`show_changes omitted existing npm test recommendation: ${JSON.stringify(changes.structuredContent.analysis)}`);
 }
-const repeatedChanges = await client.request('tools/call', { name: 'show_changes', arguments: { workspace_id: ws } });
+const repeatedChanges = await client.request('tools/call', { name: 'show_changes', arguments: { workspace_id: ws, since: 'last_shown' } });
 if (repeatedChanges.structuredContent.changed || repeatedChanges.structuredContent.diff || repeatedChanges.structuredContent.review_checkpoint_hit !== true || repeatedChanges.structuredContent.additions !== 0 || repeatedChanges.structuredContent.deletions !== 0) {
   throw new Error(`show_changes repeated the same review instead of using the last-shown checkpoint: ${JSON.stringify(repeatedChanges.structuredContent)}`);
 }

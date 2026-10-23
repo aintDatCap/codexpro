@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
@@ -19,7 +19,7 @@ import {
 } from "./profileStore.js";
 import { redactSensitiveText, redactStructured } from "./redact.js";
 import { CodexProError } from "./guard.js";
-import { RuntimeCoordinator, normalizeClientId, type RuntimeClientHandle } from "./runtimeCoordinator.js";
+import { RuntimeServices } from "./runtimeServices.js";
 import { EventLoopPauseTracker } from "./clockPause.js";
 import { createCodexProServer } from "./server.js";
 import type { LogSnapshot } from "./logging.js";
@@ -1492,8 +1492,7 @@ async function main(): Promise<void> {
   process.on("uncaughtExceptionMonitor", (error, origin) => {
     logger.error("runtime_uncaught_exception", error, { origin });
   });
-  const runtime = new RuntimeCoordinator(config, { logger });
-  const chatgptBrowserManager = runtime.chatgptBrowserManager;
+  const runtime = new RuntimeServices(config, { logger });
   if (config.requireHttpToken && !config.authToken) {
     throw new Error(
       "CODEXPRO_HTTP_TOKEN is required for this HTTP binding. " +
@@ -1613,49 +1612,17 @@ async function main(): Promise<void> {
 
   type TransportRecord = {
     transport: StreamableHTTPServerTransport;
-    runtimeClient: RuntimeClientHandle;
-    clientId: string;
-    leaseId: string;
-    createdAt: number;
     lastSeenAt: number;
     activePosts: number;
     sessionId?: string;
     closed?: boolean;
   };
-
   const transports = new Map<string, TransportRecord>();
   const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   function requestSessionId(req: Request): string | undefined {
     const value = req.headers["mcp-session-id"];
     return Array.isArray(value) ? value[0] : value;
-  }
-
-  function headerValue(req: Request, name: string): string | undefined {
-    const value = req.headers[name];
-    return Array.isArray(value) ? value[0] : typeof value === "string" ? value : undefined;
-  }
-
-  function resolveClientIdentity(req: Request): { clientId: string; synthetic: boolean } {
-    const explicitHeader = headerValue(req, "codexpro-client-id") ?? headerValue(req, "x-codexpro-client-id");
-    const explicitQuery = typeof req.query.client_id === "string" ? req.query.client_id : undefined;
-    const explicit = explicitHeader ?? explicitQuery;
-    if (explicit) return { clientId: normalizeClientId(explicit), synthetic: false };
-
-    const clientInfo = req.body?.params?.clientInfo;
-    const fingerprint = JSON.stringify({
-      name: typeof clientInfo?.name === "string" ? clientInfo.name : "",
-      version: typeof clientInfo?.version === "string" ? clientInfo.version : "",
-      userAgent: headerValue(req, "user-agent") ?? "",
-      remote: req.ip || req.socket.remoteAddress || ""
-    });
-    const suffix = createHash("sha256").update(fingerprint).digest("hex").slice(0, 24);
-    return { clientId: "legacy-http-" + suffix, synthetic: true };
-  }
-
-  function setClientHeaders(res: Response, runtimeClient: RuntimeClientHandle): void {
-    res.setHeader("CodexPro-Client-Id", runtimeClient.clientId);
-    res.setHeader("CodexPro-Lease-Id", runtimeClient.leaseId);
   }
 
   function sendSessionError(res: Response, sessionId: string | undefined): void {
@@ -1675,16 +1642,8 @@ async function main(): Promise<void> {
   function closeTransport(record: TransportRecord, reason: string): void {
     if (record.closed) return;
     record.closed = true;
-    if (record.sessionId) runtime.detachTransport(record.sessionId, reason);
-    const transportLogger = logger.child({
-      client_id: record.clientId,
-      lease_id: record.leaseId,
-      mcp_session_id: record.sessionId ?? "uninitialized"
-    });
-    transportLogger.info("mcp_transport_close_requested", { reason, active_transport_count: transports.size });
-    void Promise.resolve(record.transport.close?.())
-      .then(() => transportLogger.info("mcp_transport_closed", { reason, active_transport_count: transports.size }))
-      .catch((error) => transportLogger.error("mcp_transport_close_failed", error, { reason }));
+    logger.info("mcp_transport_close_requested", { reason, mcp_session_id: record.sessionId });
+    void Promise.resolve(record.transport.close?.()).catch(error => logger.error("mcp_transport_close_failed", error));
   }
 
   const transportPauseTracker = new EventLoopPauseTracker(Date.now, Math.min(config.httpSessionTtlMs, 60_000));
@@ -1697,27 +1656,19 @@ async function main(): Promise<void> {
     }
     const now = Date.now();
     for (const [sessionId, record] of transports) {
-      // Legacy ChatGPT clients can create a new session per tool call.
-      // Reclaim idle synthetic sessions before exhausting the cap.
-      const idleTtlMs = record.clientId.startsWith("legacy-http-")
-        ? Math.min(config.httpSessionTtlMs, 120_000)
-        : config.httpSessionTtlMs;
-      if (record.activePosts === 0 && now - record.lastSeenAt > idleTtlMs) {
+      if (record.activePosts === 0 && now - record.lastSeenAt > config.httpSessionTtlMs) {
         transports.delete(sessionId);
-        logger.warn("mcp_transport_pruned", { client_id: record.clientId, lease_id: record.leaseId, mcp_session_id: sessionId, reason: "ttl", idle_ms: now - record.lastSeenAt, idle_ttl_ms: idleTtlMs, active_transport_count: transports.size });
-        logger.warn("abandoned_mcp_transport_pruned", { client_id: record.clientId, lease_id: record.leaseId, mcp_session_id: sessionId, reason: "ttl" });
+        logger.warn("mcp_transport_pruned", { mcp_session_id: sessionId, reason: "ttl" });
         closeTransport(record, "ttl");
       }
     }
     while (transports.size > config.maxHttpSessions) {
-      // Keep in-flight tool calls alive if the pool reaches capacity.
       const oldest = [...transports.entries()]
         .filter(([, record]) => record.activePosts === 0)
         .sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
       if (!oldest) break;
       transports.delete(oldest[0]);
-      logger.warn("mcp_transport_pruned", { client_id: oldest[1].clientId, lease_id: oldest[1].leaseId, mcp_session_id: oldest[0], reason: "capacity", active_transport_count: transports.size });
-      logger.warn("abandoned_mcp_transport_pruned", { client_id: oldest[1].clientId, lease_id: oldest[1].leaseId, mcp_session_id: oldest[0], reason: "capacity" });
+      logger.warn("mcp_transport_pruned", { mcp_session_id: oldest[0], reason: "capacity" });
       closeTransport(oldest[1], "capacity");
     }
   }
@@ -1727,20 +1678,6 @@ async function main(): Promise<void> {
     pruneTransports();
     const record = transports.get(sessionId);
     if (!record) return undefined;
-    try {
-      const binding = runtime.noteTransportActivity(sessionId);
-      if (!binding) throw new CodexProError("logical client state is no longer attached");
-    } catch {
-      transports.delete(sessionId);
-      logger.warn("abandoned_mcp_transport_pruned", {
-        client_id: record.clientId,
-        lease_id: record.leaseId,
-        mcp_session_id: sessionId,
-        reason: "logical_state_missing"
-      });
-      closeTransport(record, "logical_state_missing");
-      return undefined;
-    }
     record.lastSeenAt = Date.now();
     return record.transport;
   }
@@ -1773,8 +1710,7 @@ async function main(): Promise<void> {
       contextDir: config.contextDir,
       authEnabled: Boolean(config.authToken),
       authRequired: Boolean(config.authToken),
-      clientLeaseTtlMs: config.clientLeaseTtlMs,
-      runtime: runtime.snapshot(),
+      runtime: { workspaces: runtime.workspaces.listWorkspaces().length },
       transports: {
         active: transports.size,
         maxRetained: config.maxHttpSessions,
@@ -1824,7 +1760,7 @@ async function main(): Promise<void> {
       return;
     }
     try {
-      const result = await chatgptBrowserManager.openOrFocus();
+      const result = await runtime.chatgptBrowserManager.openOrFocus();
       res.json({ ok: true, ...result });
     } catch (error) {
       jsonError(res, 503, "chatgpt_browser_unavailable", redactSensitiveText(error instanceof Error ? error.message : String(error)));
@@ -1835,97 +1771,40 @@ async function main(): Promise<void> {
     try {
       const sessionId = requestSessionId(req);
       let transport: StreamableHTTPServerTransport;
-
-      const existingTransport = getTransport(sessionId);
-      if (existingTransport) {
-        transport = existingTransport;
-        const record = sessionId ? transports.get(sessionId) : undefined;
-        if (record) {
-          setClientHeaders(res, record.runtimeClient);
-          logger.info("mcp_transport_reused", {
-            client_id: record.clientId,
-            lease_id: record.leaseId,
-            mcp_session_id: sessionId,
-            active_transport_count: transports.size
-          });
-        }
+      const existing = getTransport(sessionId);
+      if (existing) {
+        transport = existing;
+        logger.info("mcp_transport_reused", { mcp_session_id: sessionId });
       } else if (!sessionId && isInitializeRequest(req.body)) {
         pruneTransports();
         if (transports.size >= config.maxHttpSessions &&
-            [...transports.values()].every((record) => record.activePosts > 0)) {
-          logger.warn("mcp_transport_capacity_busy", { active_transport_count: transports.size });
-          res.status(503).json({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "All MCP sessions are processing requests. Retry initialization shortly." },
-            id: null
-          });
+            [...transports.values()].every(record => record.activePosts > 0)) {
+          res.status(503).json({ jsonrpc: "2.0", error: {
+            code: -32000, message: "All MCP sessions are processing requests. Retry initialization shortly."
+          }, id: null });
           return;
-        }
-        const identity = resolveClientIdentity(req);
-        const runtimeClient = await runtime.registerClient(identity.clientId, {
-          adapter: "mcp-http",
-          synthetic: identity.synthetic
-        });
-        setClientHeaders(res, runtimeClient);
-        if (identity.synthetic) {
-          logger.warn("client_identity_synthesized", {
-            client_id: runtimeClient.clientId,
-            lease_id: runtimeClient.leaseId,
-            limitation: "legacy_identity_is_a_best_effort_fingerprint"
-          });
         }
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId: string) => {
-            pruneTransports();
             transports.set(newSessionId, {
-              transport,
-              runtimeClient,
-              clientId: runtimeClient.clientId,
-              leaseId: runtimeClient.leaseId,
-              createdAt: Date.now(),
-              lastSeenAt: Date.now(),
-              activePosts: 0,
-              sessionId: newSessionId,
-              closed: false
+              transport, lastSeenAt: Date.now(), activePosts: 0,
+              sessionId: newSessionId, closed: false
             });
-            runtime.attachTransport(runtimeClient.binding, newSessionId);
             logger.info("mcp_transport_session_initialized", {
-              client_id: runtimeClient.clientId,
-              lease_id: runtimeClient.leaseId,
-              mcp_session_id: newSessionId,
-              active_transport_count: transports.size
+              mcp_session_id: newSessionId, active_transport_count: transports.size
             });
             pruneTransports();
           }
-        } as any);
-
-        (transport as any).onclose = () => {
-          const closedSessionId = (transport as any).sessionId;
-          const record = closedSessionId ? transports.get(closedSessionId) : undefined;
+        });
+        transport.onclose = () => {
+          const id = transport.sessionId;
+          const record = id ? transports.get(id) : undefined;
           if (record) record.closed = true;
-          if (closedSessionId) {
-            transports.delete(closedSessionId);
-            runtime.detachTransport(closedSessionId, "sdk_close");
-          }
-          logger.warn("mcp_transport_closed_by_sdk", {
-            client_id: record?.clientId ?? runtimeClient.clientId,
-            lease_id: record?.leaseId ?? runtimeClient.leaseId,
-            mcp_session_id: closedSessionId ?? null,
-            active_transport_count: transports.size
-          });
+          if (id) transports.delete(id);
+          logger.warn("mcp_transport_closed_by_sdk", { mcp_session_id: id ?? null });
         };
-
-        const server = createCodexProServer(config, new Map<string, string>(), {
-          runtimeCoordinator: runtime,
-          runtimeClient,
-          logger
-        });
-        logger.info("mcp_transport_created", {
-          client_id: runtimeClient.clientId,
-          lease_id: runtimeClient.leaseId,
-          active_transport_count: transports.size
-        });
+        const server = createCodexProServer(config, new Map(), { runtime, logger });
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);
@@ -1944,7 +1823,6 @@ async function main(): Promise<void> {
       }
     } catch (error) {
       logger.error("mcp_request_failed", error, { mcp_session_id: requestSessionId(req) ?? null });
-      console.error(error instanceof Error ? error.stack ?? error.message : String(error));
       if (!res.headersSent) {
         const invalidRequest = error instanceof CodexProError;
         res.status(invalidRequest ? 400 : 500).json({
@@ -1966,10 +1844,7 @@ async function main(): Promise<void> {
       return;
     }
     const record = sessionId ? transports.get(sessionId) : undefined;
-    if (record) setClientHeaders(res, record.runtimeClient);
     logger.info("mcp_transport_session_request", {
-      client_id: record?.clientId ?? null,
-      lease_id: record?.leaseId ?? null,
       mcp_session_id: sessionId,
       method: req.method
     });
@@ -2033,7 +1908,7 @@ async function main(): Promise<void> {
     clearInterval(pruneTimer);
     for (const record of transports.values()) closeTransport(record, "runtime_shutdown");
     transports.clear();
-    await runtime.shutdown().catch((error) => logger.error("runtime_coordinator_shutdown_failed", error));
+    await runtime.shutdown().catch(error => logger.error("runtime_shutdown_failed", error));
     httpServer.close(() => {
       logger.info("http_server_closed", { exit_code: exitCode });
       process.exit(exitCode);

@@ -33,12 +33,12 @@ try {
   assert.equal((await second('read', { path: 'sample.txt' })).isError, true, 'selection must not leak');
   assert.notEqual((await second('read', { workspace_id, path: 'sample.txt' })).isError, true, 'nested ID must survive reconnect');
   assert.notEqual((await second('reconnect_workspace', { workspace_id })).isError, true);
-  assert.notEqual((await second('read', { path: 'sample.txt' })).isError, true);
+  assert.equal((await second('read', { path: 'sample.txt' })).isError, true, 'reconnect must not set implicit workspace');
   const restarted = await connect(new Map());
   assert.equal((await restarted('reconnect_workspace', { workspace_id, root })).isError, true);
   assert.notEqual((await restarted('reconnect_workspace', { workspace_id, root: nested })).isError, true);
   assert.equal((await second('bash', { command: 'echo outside', cwd: '..' })).isError, true);
-  const result = await second('bash', { command: 'node output.cjs' });
+  const result = await second('bash', { workspace_id, command: 'node output.cjs' });
   assert.notEqual(result.isError, true);
   const data = result.structuredContent;
   assert.equal(data.exitCode, 0, JSON.stringify(data));
@@ -56,7 +56,7 @@ try {
   } while (offset !== null);
   assert.equal(output.trimEnd(), '日本語😀'.repeat(12000) + '\nFINAL-MARKER');
   assert.equal((await first('read_output', { workspace_id, output_resource_id: data.output_resource_id })).isError, true, 'outputs are session-local');
-  const search = await second('search', { query: 'needle', case_sensitive: false, context_before: 1, context_after: 1 });
+  const search = await second('search', { workspace_id, query: 'needle', case_sensitive: false, context_before: 1, context_after: 1 });
   assert.notEqual(search.isError, true);
   assert.match(search.structuredContent.matches[0].context, /before/);
   // Use a larger wire budget to prove the old per-file 50-match cap is gone.
@@ -66,7 +66,7 @@ try {
   const scan = await searchWorkspace(scanConfig, new PathGuard(scanConfig), { id: workspace_id, root: nested }, { query: 'Needle', maxResults: 100 });
   assert.equal(scan.matches.length, 61);
   if (process.platform === 'win32') {
-    const progress = await second('bash', { command: "Write-Progress -Activity 'noise' -Status 'working'; Write-Output 'clean'" });
+    const progress = await second('bash', { workspace_id, command: "Write-Progress -Activity 'noise' -Status 'working'; Write-Output 'clean'" });
     assert.equal(progress.structuredContent.stderr, '');
     assert.match(progress.structuredContent.stdout, /clean/);
   }

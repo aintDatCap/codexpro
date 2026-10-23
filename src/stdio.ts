@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { createCodexProServer } from "./server.js";
 import { createCodexProLogger } from "./logging.js";
-import { RuntimeCoordinator, normalizeClientId } from "./runtimeCoordinator.js";
+import { RuntimeServices } from "./runtimeServices.js";
 import { CODEXPRO_VERSION } from "./version.js";
 
 function printHelp(): void {
@@ -31,35 +31,15 @@ async function main(): Promise<void> {
   process.env.CODEXPRO_ALLOW_NO_HTTP_TOKEN ??= "1";
   const config = loadConfig();
   const rootLogger = createCodexProLogger({ workspaceRoot: config.defaultRoot, component: "stdio" });
-  const explicitClientId = process.env.CODEXPRO_CLIENT_ID?.trim();
-  const clientId = normalizeClientId(explicitClientId || "legacy-stdio");
-  const runtime = new RuntimeCoordinator(config, { logger: rootLogger });
-  const runtimeClient = await runtime.registerClient(clientId, {
-    adapter: "mcp-stdio",
-    synthetic: !explicitClientId
-  });
-  const mcpSessionId = `stdio-${process.pid}`;
-  runtime.attachTransport(runtimeClient.binding, mcpSessionId);
-
-  const logger = rootLogger.child({
-    transport: "stdio",
-    client_id: runtimeClient.clientId,
-    lease_id: runtimeClient.leaseId,
-    mcp_session_id: mcpSessionId
-  });
+  const runtime = new RuntimeServices(config, { logger: rootLogger });
+  const logger = rootLogger.child({ transport: "stdio" });
   logger.info("runtime_start", { transport: "stdio", log_dir: logger.runDir });
-  if (!explicitClientId) {
-    logger.warn("client_identity_synthesized", {
-      limitation: "legacy stdio identity is stable only for this server process; set CODEXPRO_CLIENT_ID for explicit identity"
-    });
-  }
   process.on("uncaughtExceptionMonitor", (error, origin) => {
     logger.error("runtime_uncaught_exception", error, { origin });
   });
 
   const server = createCodexProServer(config, new Map<string, string>(), {
-    runtimeCoordinator: runtime,
-    runtimeClient,
+    runtime,
     logger
   });
   const transport = new StdioServerTransport();
@@ -68,8 +48,7 @@ async function main(): Promise<void> {
   const shutdown = async (exitCode: number): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    runtime.detachTransport(mcpSessionId, "stdio_shutdown");
-    await runtime.shutdown().catch((error) => logger.error("runtime_coordinator_shutdown_failed", error));
+    await runtime.shutdown().catch(error => logger.error('runtime_shutdown_failed', error));
     await Promise.resolve((transport as any).close?.()).catch((error) => logger.error("mcp_transport_close_failed", error));
     process.exit(exitCode);
   };
