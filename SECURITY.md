@@ -1,6 +1,6 @@
 # Security Policy
 
-CodexPro exposes a local workspace to an MCP client. Treat it like a developer tool with access to your source tree, not like a hosted SaaS app.
+CodexPro exposes approved local workspaces to MCP clients. In its primary workflow, several ordinary ChatGPT conversations may access **the same repository and Git working tree concurrently** through one server and browser session. Treat it like a developer tool with access to your source tree, not like a hosted SaaS app. See [the product use case and architecture contract](docs/PRODUCT_USE_CASE.md).
 
 ## Supported Version
 
@@ -32,6 +32,12 @@ CodexPro can expose:
 - optional ChatGPT attachment import through `import_file`, which downloads only platform-provided HTTPS file references from approved origins and never accepts arbitrary model-supplied URLs
 - optional local handoff execution through `codexpro execute-handoff`, run from the user's terminal only
 - optional local execute/review looping through `codexpro loop-handoff`, run from the user's terminal only with a user-provided reviewer command and iteration limit
+
+## Concurrency trust boundary
+
+Multiple chats sharing a working directory are **not** automatically isolated: file changes, Git staging/branch state, and shell side effects affect other chats. One ChatGPT conversation is not reliably equivalent to one MCP transport session or a server-inferred logical client. Never treat a caller-supplied `client_id`, browser fingerprint, or transport session identifier as authentication or proof of a distinct conversation.
+
+For direct edits, prefer optimistic SHA-256 preconditions (`expected_sha256`) on `write` and `edit` and return a clear conflict instead of overwriting changed content. These checks do not provide transactional protection for multi-file patches, Git operations, or shell commands. Explicit targets, scoped credentials/roots, and operator coordination remain important. Separate worktrees and processes are optional tools for stronger isolation, not prerequisites for the product's shared-directory scenario.
 
 ## Failure Model
 

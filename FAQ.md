@@ -8,6 +8,14 @@ CodexPro does not unlock Plugins, unlock models, bypass account limits, or provi
 
 Plan access and model tool support are separate, and availability can change. If CodexPro actions are unavailable in that chat, use another tool-capable ChatGPT surface or the Pro context fallback for that session.
 
+## Can I use several ChatGPT conversations against the same local repo?
+
+**Yes: that is the primary product use case.** Start one CodexPro server, connect it as one MCP plugin, then open several regular ChatGPT conversations in the **same browser session**. Each chat can work on a different task using the **same allowed working directory and Git repository**. Separate browsers, separate server processes, manual per-chat client IDs, and an internal subagent workflow are not prerequisites.
+
+This is a **shared workspace**, not a multi-user merge engine. Chats see one filesystem and one Git index/branch; changes and command side effects are immediately visible across the repo. Read before modifying files and use the returned SHA-256 with `expected_sha256` on `write`/`edit` where supported. Coordinate overlapping patches, Git staging/commits, and shell commands explicitly.
+
+**Implementation note:** the server no longer generates client identities or manages per-chat leases. MCP sessions do not necessarily correspond to conversations. When working across allowed roots, pass `workspace_id` explicitly; without it tools always use the default root. Optional browser sessions, subagents and VM instances retain their own resource handles. See [the product use case and architecture contract](docs/PRODUCT_USE_CASE.md).
+
 ## How is CodexPro different from generic workspace bridges?
 
 They can look similar at the transport layer because both use a local MCP-style bridge and a workspace root.
@@ -54,7 +62,7 @@ codexpro review --json
 
 ## What is the `codexpro` supertool?
 
-`codexpro` is a stable wrapper tool for advanced setups. It accepts:
+`codexpro` is a stable wrapper tool for advanced setups, not a second AI reasoning engine and not required for several ordinary chats using the same repo. It accepts:
 
 ```json
 { "action": "search", "args": { "query": "needle", "path": "src" } }
@@ -372,7 +380,7 @@ Confirm `Projects` lists the extra roots, then restart the connector so the admi
 codexpro settings set --clear-projects
 ```
 
-Workspace selection is isolated between MCP sessions created by the client. A ChatGPT conversation is not guaranteed to map one-to-one to an MCP session, so use separate CodexPro processes when strict isolation matters.
+**Do not assume MCP sessions identify ChatGPT conversations.** No per-chat logical-client identity is needed. When multiple allowed roots exist, use explicit `workspace_id` targeting; separate server processes are useful for strict process/trust isolation, not for several chats intentionally sharing the same repo.
 
 For separate processes, two ChatGPT accounts, or two ngrok domains on one machine, run two CodexPro processes with different local ports and different public hostnames:
 
@@ -383,11 +391,11 @@ repo B: port 8788, hostname B, ChatGPT plugin URL B
 
 Run `codexpro setup` in each repo and save a profile per workspace. Do not reuse one Server URL across both accounts.
 
-## How do multiple ChatGPT sessions avoid overwriting each other?
+## How should simultaneous coding chats handle conflicting edits?
 
-Workspace selection is session-local. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read. New files use atomic replacement; existing files are updated in place to retain inode-bound metadata and hard links.
+All chats using the same root share the same real files and Git working tree. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read. New files use atomic replacement; existing files are updated in place to retain inode-bound metadata and hard links.
 
-This protects against stale file content. It does not turn CodexPro into a collaborative merge server, so separate worktrees remain the stronger choice for large overlapping changes.
+This protects against some stale file writes. It does **not** serialize concurrent Git staging, branch operations, multi-file patches, or commands with side effects. Coordinate those tasks explicitly; separate worktrees are optional for large overlapping changes. Ordinary parallel work on different files should still be possible in the same working directory.
 
 For service managers and background launches, use `codexpro start --headless`. It avoids prompts, clipboard and browser actions, reports readiness with `CODEXPRO_READY`, and exits nonzero if its HTTP runtime stops unexpectedly.
 

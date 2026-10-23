@@ -6,7 +6,7 @@
     <title>CodexPro - Use ChatGPT like your local coding agent</title>
     <meta
       name="description"
-      content="CodexPro connects ChatGPT Plugins to explicitly allowed local projects through MCP so ChatGPT can inspect, edit, verify, and hand off code safely."
+      content="One CodexPro MCP server lets multiple ordinary ChatGPT conversations in the same browser inspect, edit, and verify the same approved local repository."
     />
     <meta property="og:title" content="CodexPro" />
     <meta property="og:description" content="Local MCP bridge: paste a Server URL into ChatGPT Plugins and work on repos you allow." />
@@ -25,6 +25,7 @@
       </a>
       <nav aria-label="Primary navigation">
         <a href="#quickstart">Start</a>
+        <a href="#multichat">Multiple chats</a>
         <a href="#modes">Modes</a>
         <a href="#reference">Tools</a>
         <a href="#faq">FAQ</a>
@@ -39,9 +40,9 @@
         <div class="hero-copy">
           <p class="launch-pill"><img src="./star.svg" alt="" aria-hidden="true" />Local MCP bridge</p>
           <p class="eyebrow">Install in your repo</p>
-          <h1>Use ChatGPT like your local coding agent.</h1>
+          <h1>Let multiple ChatGPT chats code in one local repo.</h1>
           <p class="hero-lede">
-            Clone and build this fork, run setup inside a project, then paste the copied Server URL into ChatGPT Plugins. ChatGPT gets bounded tools for the launch project and any additional projects you explicitly allow.
+            Connect one CodexPro MCP server to ChatGPT. Open several normal conversations in the same browser; each can inspect, edit, and verify code in the same explicitly allowed local working directory. ChatGPT does the reasoning, while CodexPro provides the tools.
           </p>
           <div class="install-line" role="group" aria-label="Install command">
             <code>git clone https://github.com/aintDatCap/codexpro.git
@@ -56,7 +57,7 @@ npm link</code>
             <span>explicit project access</span>
             <span>token-protected URL</span>
             <span>safe bash default</span>
-            <span>repo-backed context</span>
+            <span>shared working directory</span>
           </div>
           <div class="hero-actions">
             <a class="button primary" href="#quickstart">Clone CodexPro</a>
@@ -70,7 +71,7 @@ npm link</code>
               <span class="status-dot" aria-hidden="true"></span>
               <div class="status-label">
                 <strong>Selected local project</strong>
-                <small>your repo · your ChatGPT session · your machine</small>
+                <small>one repo · several ChatGPT chats · your machine</small>
               </div>
               <span class="status-badge">bounded</span>
             </div>
@@ -87,8 +88,8 @@ npm link</code>
               </div>
               <div>
                 <span>03</span>
-                <strong>ChatGPT Plugins</strong>
-                <p>Read, search, edit, review, verify, or hand off through MCP.</p>
+                <strong>ChatGPT conversations</strong>
+                <p>Several chats use the same plugin and repo through MCP, in parallel.</p>
               </div>
             </div>
             <div class="trust-row">
@@ -154,6 +155,26 @@ npm link</code>
             <small>Best account fit</small>
             <strong>A ChatGPT web surface with custom MCP access. OpenAI currently documents full write/modify MCP for Business and Enterprise/Edu, with read/fetch MCP access for Pro.</strong>
           </div>
+        </div>
+      </section>
+
+      <section id="multichat" class="section two-col">
+        <div>
+          <p class="eyebrow">Primary product use case</p>
+          <h2>One browser, several coding chats, one working directory.</h2>
+          <p>
+            Open separate ChatGPT conversations for implementation, tests, and review. They all use the same CodexPro connector and see the same allowed repository, files, Git branch, and working tree. No separate browser profile, server process, or manual per-chat client ID is required by the intended workflow.
+          </p>
+          <p>
+            Shared writes need coordination: read before editing, use <code>expected_sha256</code> when available, and check Git status before staging or committing. This is not automatic merge or guaranteed per-chat session isolation. The existing server still has client/lease internals whose conversation mapping needs simplification.
+          </p>
+          <p><a href="https://github.com/aintDatCap/codexpro/blob/main/docs/PRODUCT_USE_CASE.md">Read the product contract and concurrency acceptance cases</a>.</p>
+        </div>
+        <div class="value-matrix">
+          <div><small>Chat A</small><strong>Implement a feature</strong></div>
+          <div><small>Chat B</small><strong>Improve tests in the same repo</strong></div>
+          <div><small>Chat C</small><strong>Review diffs and verify the shared tree</strong></div>
+          <div><small>Shared state</small><strong>One filesystem and Git working tree, not isolated copies</strong></div>
         </div>
       </section>
 

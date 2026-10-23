@@ -27,11 +27,13 @@
 
 ## 它是什么
 
-CodexPro 是本地 MCP server。它连接**你的 ChatGPT 会话**、**你的机器**和**你允许的仓库**。
+CodexPro 是本地 MCP 工具服务器。它让**多个普通 ChatGPT 对话**使用**同一个服务器**访问**你明确允许的本地仓库**。ChatGPT 负责推理和计划，CodexPro 负责提供开发工具。
 
 ChatGPT 可以读取、搜索、编辑、审查、验证、导入附件，并写 handoff 计划。范围始终限制在这些 root 内。
 
-它不是托管 SaaS、模型代理、配额绕过、账号池或远程 shell 服务。
+**核心用例：**在同一个浏览器会话中打开多个 ChatGPT 对话，让它们同时在同一个仓库和工作目录里读取、编辑代码并运行测试。文件和 Git 工作区是共享的，并非每个对话独立复制一份。无需为每个对话配置单独的 `client_id`、浏览器或 CodexPro 进程。并行修改可能冲突；请先读取文件，必要时通过 `expected_sha256` 检查版本，并协调 Git 操作。
+
+它不是托管 SaaS、模型代理、配额绕过、账号池或远程 shell 服务，也不解除 ChatGPT 的使用限制。详情参见[产品用例与架构约定（英文）](docs/PRODUCT_USE_CASE.md)。
 
 ## 安装
 
@@ -60,7 +62,7 @@ codexpro setup
 4. 连接方式：**Server URL** → 粘贴 CodexPro 复制的 URL。
 5. 认证：**No Authentication / None**（表单可能默认 OAuth，创建前改掉）。
 
-CodexPro 的认证就在这个 URL 里的 token。不要分享该 URL。
+CodexPro 的认证就在这个 URL 里的 token。不要分享该 URL。同一个插件可以供同一浏览器中的多个 ChatGPT 对话使用，共享同一个工作目录。
 
 | 打开 Plugins 并点击 `+` | 填写 New Plugin 表单 |
 | --- | --- |
@@ -92,7 +94,7 @@ codexpro start
 - Windows ISO 检测、Secure Boot、vTPM，以及可选的无人值守安装/OOBE 精简。
 - `vm_guest_status`、`vm_exec`、`vm_upload`、`vm_download` 统一 guest 工具。
 - 通过专用可见 Chrome + CDP 的实验性 ChatGPT browser subagents。
-- 跨 MCP 重连保持 logical client/lease/runtime 状态与关联日志。
+- 当前实现仍含 logical client / lease 状态与日志；它们属于待简化的内部机制，不是多对话共享仓库的必备配置。
 
 详见 [VM runtimes](docs/vm.md) 和 [AI VM usage](docs/vm-ai-usage.md)。
 

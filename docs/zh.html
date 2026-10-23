@@ -6,7 +6,7 @@
     <title>CodexPro - 让 ChatGPT Web 连接本地仓库</title>
     <meta
       name="description"
-      content="CodexPro 通过 ChatGPT Plugins 和 MCP，把 ChatGPT Web 连接到你明确允许的本地仓库，支持读取、搜索、编辑、git 检查和安全验证。"
+      content="一个 CodexPro MCP 服务器让同一浏览器中的多个普通 ChatGPT 对话共同访问、编辑和验证同一个已授权的本地仓库。"
     />
     <meta property="og:title" content="CodexPro 中文文档" />
     <meta property="og:description" content="本地 MCP 桥：把 Server URL 粘贴到 ChatGPT Plugins，在你允许的仓库上工作。" />
@@ -25,6 +25,7 @@
       </a>
       <nav aria-label="主导航">
         <a href="#quickstart">开始</a>
+        <a href="#multichat">多个对话</a>
         <a href="#chatgpt">ChatGPT</a>
         <a href="#url">稳定 URL</a>
         <a href="#modes">模式</a>
@@ -39,9 +40,9 @@
         <div class="hero-copy">
           <p class="launch-pill"><img src="./star.svg" alt="" aria-hidden="true" />简单安装</p>
           <p class="eyebrow">在仓库里安装</p>
-          <h1>把 ChatGPT 连接到本地代码。</h1>
+          <h1>多个 ChatGPT 对话，共同开发一个本地仓库。</h1>
           <p class="hero-lede">
-            克隆并构建当前 fork，在项目里运行 setup，然后把复制好的 Server URL 粘贴到 ChatGPT Plugins。CodexPro 会处理本地 server、token、tunnel 和 workspace 工具。
+            运行一个 CodexPro MCP 服务器并在 ChatGPT 中连接插件。在同一个浏览器里打开多个普通对话，就能同时读取、编辑和验证同一个允许访问的本地工作目录。ChatGPT 负责思考，CodexPro 提供工具。
           </p>
           <div class="install-line" role="group" aria-label="安装命令">
             <code>git clone https://github.com/aintDatCap/codexpro.git
@@ -56,7 +57,7 @@ npm link</code>
             <span>AGENTS.md 上下文</span>
             <span>.ai-bridge handoff</span>
             <span>Hyper-V / QEMU VM</span>
-            <span>guest exec / browser subagents</span>
+            <span>多个对话共享同一仓库</span>
           </div>
           <div class="hero-actions">
             <a class="button primary" href="#quickstart">克隆 CodexPro</a>
@@ -126,6 +127,22 @@ npm link</code>
           <span>03</span>
           <strong>Paste</strong>
           <p>创建 ChatGPT Plugin 时粘贴复制好的 Server URL。</p>
+        </div>
+      </section>
+
+      <section id="multichat" class="section two-col">
+        <div>
+          <p class="eyebrow">核心产品用例</p>
+          <h2>一个浏览器、多个编码对话、一个共享工作目录。</h2>
+          <p>让 ChatGPT 对话 A 实现功能、对话 B 补充测试、对话 C 检查 diff。它们通过同一个 CodexPro 插件访问相同的本地文件和 Git 工作区。正常使用不需要为每个对话启动独立服务器、浏览器或手动设置 client_id。</p>
+          <p>共享不代表自动合并：读取文件后尽可能使用 <code>expected_sha256</code> 避免过时写入，并协调 Git 和 shell 操作。当前实现的 logical client/lease 身份机制尚不保证按 ChatGPT 对话独立隔离。</p>
+          <p><a href="https://github.com/aintDatCap/codexpro/blob/main/docs/PRODUCT_USE_CASE.md">阅读产品用例与并发验收标准（英文）</a>。</p>
+        </div>
+        <div class="value-matrix">
+          <div><small>对话 A</small><strong>实现功能</strong></div>
+          <div><small>对话 B</small><strong>修改同一仓库的测试</strong></div>
+          <div><small>对话 C</small><strong>检查共享的改动并验证</strong></div>
+          <div><small>共享状态</small><strong>真实的文件系统与 Git 工作区</strong></div>
         </div>
       </section>
 

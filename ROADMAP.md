@@ -1,8 +1,16 @@
 # CodexPro Roadmap
 
-CodexPro aims to be the safest, most reliable bridge between ChatGPT and explicitly allowed local repositories. The roadmap favors measurable workflow improvements over adding broad machine control.
+CodexPro aims to be a simple, reliable local MCP bridge through which **multiple ordinary ChatGPT conversations in one browser** can work concurrently in **the same allowed repository and working directory**. ChatGPT is the coding agent; CodexPro is the tool server. See [product use case and architecture contract](docs/PRODUCT_USE_CASE.md). The roadmap favors removing complexity over adding broad machine control.
 
-## Now: release and compatibility confidence
+## First priority: simplify the shared-workspace coding workflow
+
+- Remove unnecessary coupling between HTTP/session/client identity, workspace targeting, and core file/Git/shell operations.
+- Keep ordinary ChatGPT multi-chat access functional without mandatory custom `client_id` configuration or separate CodexPro processes.
+- Establish concurrency tests for independent reads/writes, stale `expected_sha256` conflicts, explicit workspace targeting, and Git/index side effects.
+- Audit and delete unnecessary managers, compatibility layers, and optional features with poor value-to-complexity ratios, without weakening security checks.
+- Preserve the key distinction: shared repository files are intentional; hidden cross-chat state contamination is not.
+
+## Next: release confidence
 
 - Keep package metadata as the single source of truth for every runtime version report.
 - Install each packed release into a clean temporary project and test all public command entrypoints.

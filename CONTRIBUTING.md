@@ -1,6 +1,6 @@
 # Contributing
 
-CodexPro is early. Good contributions make it safer, faster, and easier to explain.
+CodexPro is early. Good contributions make it safer, faster, and easier to explain. Start with the [product use case and architecture contract](docs/PRODUCT_USE_CASE.md). The goal is ordinary ChatGPT conversations acting as concurrent coding agents against the **same allowed working directory**, using **one** MCP server and browser session. ChatGPT owns the reasoning; CodexPro exposes tools.
 
 ## Local Setup
 
@@ -21,6 +21,15 @@ Run through a Cloudflare quick tunnel:
 ```bash
 npm run connect -- --root /path/to/test/repo --bash safe --write handoff
 ```
+
+## Architecture and concurrency review
+
+- Preserve concurrent read/write access by multiple ChatGPT chats to the same repository; do not force a distinct server, browser, worktree, or manually configured client ID per chat.
+- Keep authentication, transport-session routing, workspace targeting, and operation ownership separate. Do not assume one MCP connection is one chat.
+- Prefer explicit workspace and operation identifiers where needed rather than hidden per-client mutable selection.
+- Handle stale edits with optimistic SHA-256 checks and useful conflict errors. Concurrent Git/index/branch and shell changes still need explicit coordination.
+- Prefer deleting dead code and unnecessary wrappers to adding speculative managers, registries, or agent infrastructure. Treat optional browser, VM, subagent, and handoff features as independent from the core MCP file/Git/shell tools.
+- Test the multi-chat acceptance scenarios in [docs/PRODUCT_USE_CASE.md](docs/PRODUCT_USE_CASE.md) when changing workspace, HTTP, runtime, or concurrency behavior.
 
 ## Useful Areas
 

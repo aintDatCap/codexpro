@@ -1,8 +1,8 @@
 # Design - CodexPro
 
-A locked product-system note for CodexPro docs and the local admin surface.
-Every redesign should keep the same trust story: ChatGPT can act on one local
-workspace through a token-protected MCP bridge, while shell, writes, Codex
+A product and documentation design note. The authoritative multi-chat workflow is specified in [docs/PRODUCT_USE_CASE.md](docs/PRODUCT_USE_CASE.md).
+Every redesign should keep the same trust story: **several regular ChatGPT conversations**, even from one browser, may act concurrently on the same approved local
+workspace through one token-protected MCP bridge, while shell, writes, Codex
 history, and handoff execution stay explicit user choices.
 
 ## Genre
@@ -11,14 +11,14 @@ modern-minimal developer tool
 
 ## Positioning
 
-Use ChatGPT like your local coding agent.
+Use ordinary ChatGPT conversations as coding agents sharing a local repository through one CodexPro MCP server. ChatGPT handles planning and reasoning; CodexPro supplies development tools.
 
 CodexPro should explain itself in this order:
 
 1. Install the CLI.
 2. Run setup inside one repo.
 3. Paste the copied Server URL into ChatGPT Plugins (turn Developer mode on first if needed).
-4. Let ChatGPT inspect, edit, verify, or hand off work inside that workspace.
+4. Let several chats inspect, edit, and verify work in the **same directory** simultaneously; handoff to another agent is optional.
 5. Keep the safety boundary visible: host tools are a local bridge, not a quota
    bypass, model proxy, hosted SaaS, or OS sandbox. Optional QEMU runtimes are
    separate disposable guest environments, not a blanket safety guarantee.
@@ -64,6 +64,9 @@ motion support. Animate transform and opacity only.
 
 - Say what CodexPro does, then say what it does not do.
 - Do not claim permanent ChatGPT memory. Say repo-backed context files.
+- Do not imply one browser tab or MCP session maps to one unique coding agent.
+- Do not require per-chat client IDs, separate server instances, or an internal subagent to use ordinary ChatGPT chats concurrently.
+- Say explicitly that Git, files, and command side effects are shared; recommend optimistic file checks and coordination.
 - Do not imply CodexPro unlocks models, bypasses limits, or automates approval
   gates.
 - Do not expose raw local paths as marketing proof. Local admin can show them

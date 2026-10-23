@@ -16,11 +16,11 @@
 
 ## What it is
 
-CodexPro is a local MCP server. It connects **your ChatGPT session** to **your machine** and **repos you allow**.
+CodexPro is a local MCP server that gives ordinary **ChatGPT conversations** development tools for **your machine** and **repositories you explicitly allow**.
 
-ChatGPT can read, search, edit, review, verify, import attachments, and write handoff plans. It stays inside those roots.
+ChatGPT does the reasoning and planning; CodexPro supplies bounded tools to read, search, edit, review, test, and inspect Git state. Multiple chats in one browser can intentionally use the **same CodexPro server and working directory** concurrently. Their filesystem and Git state are shared, not magically isolated.
 
-It is not a hosted SaaS product, model proxy, quota bypass, account pool, or remote shell service.
+It is not a hosted SaaS product, model proxy, quota bypass, account pool, or remote shell service; normal ChatGPT usage and tool-access limits still apply. See the [product use case and architecture contract](docs/PRODUCT_USE_CASE.md) for the intended multi-chat design.
 
 ## Install
 
@@ -49,7 +49,7 @@ codexpro setup
 4. Connection: **Server URL** → paste the URL CodexPro copied.
 5. Authentication: **No Authentication / None** (change this if the form defaults to OAuth).
 
-CodexPro auth is the token already in that URL. Do not share the URL.
+CodexPro auth is the token already in that URL. Do not share the URL. **Use the same plugin from multiple ChatGPT conversations in one browser**; do not create a separate connector or manually configure a different `client_id` for every chat.
 
 | Open Plugins and click `+` | Complete the New Plugin form |
 | --- | --- |
@@ -81,7 +81,7 @@ With workspace write mode (the normal agent setup):
 - Windows ISO detection, Secure Boot + vTPM, and optional unattended Windows setup with a local account and reduced OOBE/privacy prompts.
 - Backend-neutral guest tools: `vm_guest_status`, `vm_exec`, `vm_upload`, and `vm_download`.
 - Experimental ChatGPT-browser subagents using a dedicated visible Chrome profile attached over CDP.
-- Logical client IDs, renewable leases, reconnect-safe runtime ownership, and correlated runtime/tool logging.
+- MCP transport sessions are protocol connections, not ChatGPT conversation identities. Optional browser and subagent workers remain process-owned; VMs are managed independently.
 
 See [VM runtimes](docs/vm.md) and [VM usage for AI agents](docs/vm-ai-usage.md) for the guest workflow.
 
@@ -117,17 +117,17 @@ codexpro start
 
 Ask ChatGPT to `open_workspace` on an allowed project. `open_current_workspace` returns to the launch repo.
 
-For two ChatGPT accounts or hard isolation, run two CodexPro processes on different ports and Server URLs.
+For strict process-level separation between trust domains, run separate CodexPro processes on different ports and Server URLs. **Multiple chats sharing one repository do not need separate servers.** With several allowed roots, prefer an explicit `workspace_id` to prevent ambiguous targeting.
 
-## Logical clients, reconnects, and leases
+## Multiple ChatGPT conversations, one shared repository
 
-MCP transport sessions are not application identity. A logical caller should use one stable `client_id` across reconnects so workspace selection, output retention, browser ownership, subagents, cancellation, and scheduler state remain attached to that caller instead of to an HTTP/SSE connection.
+**Primary workflow:** connect one CodexPro server to ChatGPT, open several ordinary conversations in the **same browser session**, and let them work on the same allowed root simultaneously. No additional browser instance, separate CodexPro process, manually registered agent, or per-chat client ID is a prerequisite. ChatGPT handles each task's reasoning; CodexPro provides tools over the shared filesystem.
 
-HTTP clients should send `CodexPro-Client-Id: <stable-id>` (the compatibility query parameter `client_id=<stable-id>` is also accepted). CodexPro returns `CodexPro-Client-Id` and `CodexPro-Lease-Id` response headers. Stdio callers can set `CODEXPRO_CLIENT_ID`. The MCP `Mcp-Session-Id` is used only for protocol routing, diagnostics, and tracing.
+**Concurrent edits are real shared writes.** Read a file before editing and pass its `sha256` as `expected_sha256` to `write` or `edit` when possible. On conflict, re-read and reconcile instead of blindly overwriting. Coordinate Git index/branch operations, shell side effects, and overlapping patches; a single-file checksum cannot protect those. Optional Git worktrees can help with heavy overlap but are not required for multi-chat access.
 
-Clients that do not yet provide an HTTP client ID receive a deterministic legacy fingerprint derived from MCP client metadata, User-Agent, and remote address. That fallback is migration-only: two callers with identical metadata/network identity can collide, and the fingerprint can change when that metadata or network path changes. Explicit stable IDs are the supported way to distinguish logical callers.
+**Current behavior:** CodexPro does not require or synthesize a per-conversation `client_id` or lease. MCP session IDs are transport identifiers, not chat identifiers. `open_workspace` returns a stable `workspace_id`; pass it when targeting a non-default project. Calls without one always use the configured default root, regardless of which chat or transport opened another project.
 
-Logical clients hold renewable leases. Activity renews the lease; an MCP/network disconnect does not release it. `shutdown_client` performs explicit cleanup, while lease expiry deterministically cleans owned agents, browser sessions/pages, worktrees, and cancellation state. `CODEXPRO_CLIENT_LEASE_TTL_MS` controls logical-client lease lifetime (default one hour). This is separate from `CODEXPRO_HTTP_SESSION_TTL_MS`, which only bounds stale transport retention.
+Browser sessions, ChatGPT-browser subagents, and VMs remain supported and independently managed by the running process. Browser actions use explicit `session_id` handles and subagents use their returned agent IDs; neither implies a private ChatGPT conversation identity. By default `show_changes` returns the actual current diff each time, so one chat's review cannot hide changes from another. `since: "last_shown"` is an opt-in transport-local optimization, not a per-chat guarantee. See [product use case and architecture contract](docs/PRODUCT_USE_CASE.md).
 
 ## Commands
 
@@ -290,6 +290,7 @@ npm run release:publish
 ## Docs
 
 - [Repository](https://github.com/aintDatCap/codexpro)
+- [Product use case and architecture contract](docs/PRODUCT_USE_CASE.md)
 - [FAQ](FAQ.md)
 - [Research workflow feedback, fixes, and output paging](docs/research-feedback.md)
 - [VM runtimes](docs/vm.md)
