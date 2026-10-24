@@ -771,7 +771,7 @@ try {
 
   const heldTransports = [];
   try {
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       const heldClient = new Client({ name: 'codexpro-http-smoke-held', version: '0.0.0' });
       const heldTransport = new StreamableHTTPClientTransport(new URL(mcpUrl));
       await heldClient.connect(heldTransport);
@@ -786,19 +786,31 @@ try {
     if (transportHealth.transports?.active > 4) {
       throw new Error(`transport retention exceeded configured bound: ${JSON.stringify(transportHealth.transports)}`);
     }
-    const oldestSession = heldTransports[0].transport.sessionId;
-    if (!oldestSession) throw new Error('held transport did not receive a session id');
-    await expectSessionNotFound(
-      await postToolsListWithSession(baseUrl, token, oldestSession),
-      'capacity-pruned POST session'
-    );
-
-    const pruneLogsResponse = await fetch(`${baseUrl}/admin/logs`, {
+    // An initialized MCP client maintains an SSE subscription. Reaching the
+    // session cap must reject a newcomer rather than disconnect an active one.
+    const fullResponse = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 123, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'over-capacity', version: '1.0' } }
+      })
+    });
+    if (fullResponse.status !== 503) {
+      throw new Error(`capacity exhaustion should return 503, got ${fullResponse.status}`);
+    }
+    await fullResponse.body?.cancel();
+    await callTool(heldTransports[0].client, 'runtime_status');
+    const capacityLogsResponse = await fetch(`${baseUrl}/admin/logs`, {
       headers: { Authorization: `Bearer ${token}` }
     });
-    const pruneLogs = await pruneLogsResponse.json();
-    if (!pruneLogs.entries?.some?.(entry => entry.event === 'mcp_transport_pruned' && entry.reason === 'capacity')) {
-      throw new Error('capacity pruning did not emit mcp_transport_pruned');
+    const capacityLogs = await capacityLogsResponse.json();
+    if (!capacityLogs.entries?.some?.(entry => entry.event === 'mcp_transport_capacity_reached')) {
+      throw new Error('capacity refusal did not emit mcp_transport_capacity_reached');
     }
   } finally {
     for (const held of heldTransports) {

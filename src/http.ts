@@ -1613,11 +1613,12 @@ async function main(): Promise<void> {
   type TransportRecord = {
     transport: StreamableHTTPServerTransport;
     lastSeenAt: number;
-    activePosts: number;
+    activeRequests: number;
     sessionId?: string;
     closed?: boolean;
   };
   const transports = new Map<string, TransportRecord>();
+  let pendingInitializations = 0;
   const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   function requestSessionId(req: Request): string | undefined {
@@ -1646,6 +1647,36 @@ async function main(): Promise<void> {
     void Promise.resolve(record.transport.close?.()).catch(error => logger.error("mcp_transport_close_failed", error));
   }
 
+  // Streaming responses stay live after the SDK's handleRequest() resolves.
+  // Keep sessions with active SSE/POST/DELETE response streams from being pruned.
+  function trackResponse(record: TransportRecord, res: Response): void {
+    record.activeRequests += 1;
+    record.lastSeenAt = Date.now();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      record.activeRequests = Math.max(0, record.activeRequests - 1);
+      record.lastSeenAt = Date.now();
+      res.off("finish", release);
+      res.off("close", release);
+    };
+    res.once("finish", release);
+    res.once("close", release);
+    if (res.writableEnded || res.destroyed) release();
+  }
+
+  function pruneOldestInactiveTransport(reason: "capacity"): boolean {
+    const oldest = [...transports.entries()]
+      .filter(([, record]) => record.activeRequests === 0)
+      .sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
+    if (!oldest) return false;
+    transports.delete(oldest[0]);
+    logger.warn("mcp_transport_pruned", { mcp_session_id: oldest[0], reason });
+    closeTransport(oldest[1], reason);
+    return true;
+  }
+
   const transportPauseTracker = new EventLoopPauseTracker(Date.now, Math.min(config.httpSessionTtlMs, 60_000));
 
   function pruneTransports(): void {
@@ -1656,20 +1687,14 @@ async function main(): Promise<void> {
     }
     const now = Date.now();
     for (const [sessionId, record] of transports) {
-      if (record.activePosts === 0 && now - record.lastSeenAt > config.httpSessionTtlMs) {
+      if (record.activeRequests === 0 && now - record.lastSeenAt > config.httpSessionTtlMs) {
         transports.delete(sessionId);
         logger.warn("mcp_transport_pruned", { mcp_session_id: sessionId, reason: "ttl" });
         closeTransport(record, "ttl");
       }
     }
     while (transports.size > config.maxHttpSessions) {
-      const oldest = [...transports.entries()]
-        .filter(([, record]) => record.activePosts === 0)
-        .sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
-      if (!oldest) break;
-      transports.delete(oldest[0]);
-      logger.warn("mcp_transport_pruned", { mcp_session_id: oldest[0], reason: "capacity" });
-      closeTransport(oldest[1], "capacity");
+      if (!pruneOldestInactiveTransport("capacity")) break;
     }
   }
 
@@ -1768,6 +1793,12 @@ async function main(): Promise<void> {
   });
 
   app.post("/mcp", express.json({ limit: "20mb" }), async (req, res) => {
+    let hasInitializationReservation = false;
+    const releaseInitializationReservation = () => {
+      if (!hasInitializationReservation) return;
+      hasInitializationReservation = false;
+      pendingInitializations -= 1;
+    };
     try {
       const sessionId = requestSessionId(req);
       let transport: StreamableHTTPServerTransport;
@@ -1777,20 +1808,32 @@ async function main(): Promise<void> {
         logger.info("mcp_transport_reused", { mcp_session_id: sessionId });
       } else if (!sessionId && isInitializeRequest(req.body)) {
         pruneTransports();
-        if (transports.size >= config.maxHttpSessions &&
-            [...transports.values()].every(record => record.activePosts > 0)) {
-          res.status(503).json({ jsonrpc: "2.0", error: {
-            code: -32000, message: "All MCP sessions are processing requests. Retry initialization shortly."
-          }, id: null });
-          return;
+        // Reserve capacity synchronously: concurrent initialization requests
+        // must not evict another client's live SSE connection.
+        while (transports.size + pendingInitializations >= config.maxHttpSessions) {
+          if (!pruneOldestInactiveTransport("capacity")) {
+            logger.warn("mcp_transport_capacity_reached", {
+              active_transport_count: transports.size,
+              pending_initializations: pendingInitializations
+            });
+            res.status(503).json({ jsonrpc: "2.0", error: {
+              code: -32000, message: "All MCP sessions are active. Retry initialization shortly."
+            }, id: null });
+            return;
+          }
         }
+        pendingInitializations += 1;
+        hasInitializationReservation = true;
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId: string) => {
-            transports.set(newSessionId, {
-              transport, lastSeenAt: Date.now(), activePosts: 0,
+            const record: TransportRecord = {
+              transport, lastSeenAt: Date.now(), activeRequests: 0,
               sessionId: newSessionId, closed: false
-            });
+            };
+            transports.set(newSessionId, record);
+            trackResponse(record, res);
+            releaseInitializationReservation();
             logger.info("mcp_transport_session_initialized", {
               mcp_session_id: newSessionId, active_transport_count: transports.size
             });
@@ -1800,8 +1843,10 @@ async function main(): Promise<void> {
         transport.onclose = () => {
           const id = transport.sessionId;
           const record = id ? transports.get(id) : undefined;
-          if (record) record.closed = true;
-          if (id) transports.delete(id);
+          if (record?.transport === transport) {
+            record.closed = true;
+            transports.delete(id!);
+          }
           logger.warn("mcp_transport_closed_by_sdk", { mcp_session_id: id ?? null });
         };
         const server = createCodexProServer(config, new Map(), { runtime, logger });
@@ -1812,15 +1857,8 @@ async function main(): Promise<void> {
       }
 
       const activeRecord = sessionId ? transports.get(sessionId) : undefined;
-      if (activeRecord) activeRecord.activePosts += 1;
-      try {
-        await transport.handleRequest(req, res, req.body);
-      } finally {
-        if (activeRecord) {
-          activeRecord.activePosts -= 1;
-          activeRecord.lastSeenAt = Date.now();
-        }
-      }
+      if (activeRecord) trackResponse(activeRecord, res);
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       logger.error("mcp_request_failed", error, { mcp_session_id: requestSessionId(req) ?? null });
       if (!res.headersSent) {
@@ -1833,6 +1871,8 @@ async function main(): Promise<void> {
           id: null
         });
       }
+    } finally {
+      releaseInitializationReservation();
     }
   });
 
@@ -1844,6 +1884,7 @@ async function main(): Promise<void> {
       return;
     }
     const record = sessionId ? transports.get(sessionId) : undefined;
+    if (record) trackResponse(record, res);
     logger.info("mcp_transport_session_request", {
       mcp_session_id: sessionId,
       method: req.method
